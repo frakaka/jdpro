@@ -132,7 +132,34 @@ function looksLikeJson(content) {
   return content.startsWith('{') || content.startsWith('[');
 }
 
+function getCookieValue(cookie, key) {
+  const pattern = new RegExp(`(?:^|;\\s*)${key}=([^;]*)`);
+  const match = cookie.match(pattern);
+  return match ? match[1] : '';
+}
+
+function getRequestUuid(cookie) {
+  const jda = getCookieValue(cookie, '__jda');
+  if (jda) {
+    const parts = jda.split('.');
+    if (parts.length >= 2 && parts[1]) {
+      return parts[1];
+    }
+  }
+
+  const fallbackKeys = ['mba_muid', '__jdu', 'pt_pin'];
+  for (const key of fallbackKeys) {
+    const value = getCookieValue(cookie, key);
+    if (value) {
+      return decodeURIComponent(value);
+    }
+  }
+
+  return String(Date.now());
+}
+
 function buildHeaders(cookie, cipherContext) {
+  const requestUuid = getRequestUuid(cookie);
   const headers = {
     Accept: 'application/json, text/plain, */*',
     'Content-Type': 'application/json;charset=UTF-8',
@@ -142,8 +169,11 @@ function buildHeaders(cookie, cipherContext) {
     'User-Agent': getUserAgent(),
     'Accept-Language': 'zh-CN,zh-Hans;q=0.9',
     'app-key': 'jexpress',
+    appparams: '{"appid":158,"ticket_type":"m"}',
+    clientinfo: '{"appName":"jingcai","client":"m"}',
     'biz-type': 'service-monitor',
-    'LOP-DN': 'jingcai-http.jd.com',
+    'x-requested-with': 'XMLHttpRequest',
+    'LOP-DN': 'jingcai.jd.com',
     'source-client': '2',
     access: 'H5',
     'jexpress-report-time': String(Date.now()),
@@ -151,7 +181,8 @@ function buildHeaders(cookie, cipherContext) {
     'jfe-cgi-flow': 'EXP_JCH5_e1abc22',
     forcebot: '0',
     sdkversion: '1.0.7',
-    screen: '393*852',
+    screen: '390*844',
+    uuid: requestUuid,
     'jexpress-trace-id': createTraceId(),
     'event-id': createTraceId(),
   };
