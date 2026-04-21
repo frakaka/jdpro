@@ -1,5 +1,10 @@
 /*
 cron:10 0 * * * jd_member_center_bean.js
+
+环境变量说明：
+1. 本脚本当前没有额外的专属环境变量。
+   说明：任务 ID、等待时长、请求头等参数都在脚本内部固定实现。
+   如果后续需要覆盖这些行为，需要改脚本本身，而不是配环境变量。
 */
 
 'use strict';
@@ -8,8 +13,7 @@ const crypto = require('crypto');
 const got = require('got');
 const { USER_AGENT, UARAM } = require('./USER_AGENTS');
 const jdCookieNode = require('./jdCookie.js');
-const SCRIPT_NAME = '浏览会员中心领京豆';
-const $ = new Env('浏览会员中心领京豆');
+const $ = new Env('浏览快递会员中心');
 
 let notify = null;
 try {
@@ -55,7 +59,7 @@ function Env(name) {
   };
 }
 
-$.log('', `🔔${SCRIPT_NAME}, 开始!`);
+$.log('', `🔔${$.name}, 开始!`);
 
 function getUserName(cookie) {
   const match = cookie.match(/pt_pin=([^;]+)/);
@@ -450,6 +454,7 @@ async function processAccount(cookie, index) {
 
   const beforeBeanCount = await queryBeanCount(cookie).catch(() => null);
   const initialTaskResponse = await queryTaskList(cookie);
+  console.log(`${prefix}: 初始任务列表 => ${formatTaskSummary(initialTaskResponse)}`);
   let task = findTask(initialTaskResponse, TASK_ID);
 
   if (!task) {
@@ -479,6 +484,7 @@ async function processAccount(cookie, index) {
     console.log(`${prefix}: 上报结果 ${extractMessage(reportResponse)}`);
 
     const refreshedTaskResponse = await queryTaskList(cookie);
+    console.log(`${prefix}: 上报后任务列表 => ${formatTaskSummary(refreshedTaskResponse)}`);
     task = findTask(refreshedTaskResponse, TASK_ID);
     if (!task) {
       console.log(`${prefix}: 上报后 jingBeanTaskList 原始返回 => ${stringifyForLog(refreshedTaskResponse)}`);
@@ -515,7 +521,7 @@ async function processAccount(cookie, index) {
 
 async function main() {
   if (!cookies.length) {
-    console.log(`${SCRIPT_NAME}: 未找到可用 Cookie`);
+    console.log(`${$.name}: 未找到可用 Cookie`);
     return;
   }
 
@@ -536,13 +542,13 @@ async function main() {
 
   const notifyText = summary.join('\n');
   if (notify && typeof notify.sendNotify === 'function' && notifyText) {
-    await notify.sendNotify(SCRIPT_NAME, notifyText);
+    await notify.sendNotify($.name, notifyText);
   }
 }
 
 main()
   .catch((error) => {
-    console.log(`${SCRIPT_NAME}: ${error.message}`);
+    console.log(`${$.name}: ${error.message}`);
   })
   .finally(() => {
     $.done();
