@@ -9,7 +9,7 @@ const got = require('got');
 const { USER_AGENT, UARAM } = require('./USER_AGENTS');
 const jdCookieNode = require('./jdCookie.js');
 const SCRIPT_NAME = '浏览会员中心领京豆';
-const $ = new Env(SCRIPT_NAME);
+const $ = new Env('浏览会员中心领京豆');
 
 let notify = null;
 try {
