@@ -8,6 +8,8 @@ const crypto = require('crypto');
 const got = require('got');
 const { USER_AGENT, UARAM } = require('./USER_AGENTS');
 const jdCookieNode = require('./jdCookie.js');
+const SCRIPT_NAME = '浏览会员中心领京豆';
+const $ = new Env(SCRIPT_NAME);
 
 let notify = null;
 try {
@@ -16,7 +18,6 @@ try {
   notify = null;
 }
 
-const SCRIPT_NAME = '浏览会员中心领京豆';
 const BASE_URL = 'https://lop-proxy.jd.com';
 const TASK_ID = 'member_center';
 const TASK_LIST_PATH = '/jdBeanApi/jingBeanTaskList';
@@ -39,6 +40,22 @@ const TASK_STATUS = {
 };
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
+
+function Env(name) {
+  return {
+    name,
+    startTime: Date.now(),
+    log(...messages) {
+      console.log(messages.join('\n'));
+    },
+    done() {
+      const seconds = ((Date.now() - this.startTime) / 1000).toFixed(3);
+      this.log('', `🔔${this.name}, 结束! 🕛 ${seconds} 秒`, '');
+    },
+  };
+}
+
+$.log('', `🔔${SCRIPT_NAME}, 开始!`);
 
 function getUserName(cookie) {
   const match = cookie.match(/pt_pin=([^;]+)/);
@@ -523,6 +540,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.log(`${SCRIPT_NAME}: ${error.message}`);
-});
+main()
+  .catch((error) => {
+    console.log(`${SCRIPT_NAME}: ${error.message}`);
+  })
+  .finally(() => {
+    $.done();
+  });
