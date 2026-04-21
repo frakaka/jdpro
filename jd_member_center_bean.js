@@ -220,6 +220,61 @@ function findTask(data, taskId) {
   return result;
 }
 
+function collectTasks(data) {
+  const tasks = [];
+  walkData(data, (node) => {
+    if (typeof node.taskId === 'string' && node.taskId) {
+      tasks.push({
+        taskId: node.taskId,
+        taskName: typeof node.taskName === 'string' ? node.taskName : '',
+        taskDesc: typeof node.taskDesc === 'string' ? node.taskDesc : '',
+        taskStatus: node.taskStatus,
+        claimCode: typeof node.claimCode === 'string' ? node.claimCode : '',
+      });
+    }
+  });
+  return tasks;
+}
+
+function formatTaskSummary(data) {
+  const tasks = collectTasks(data);
+  if (!tasks.length) {
+    const preview = typeof data === 'string' ? data : JSON.stringify(data);
+    return `接口未返回可识别任务，原始响应片段：${preview.slice(0, 300)}`;
+  }
+
+  const uniqueTasks = [];
+  const seen = new Set();
+  for (const task of tasks) {
+    const key = `${task.taskId}|${task.taskStatus}|${task.claimCode}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    uniqueTasks.push(task);
+  }
+
+  return uniqueTasks
+    .slice(0, 12)
+    .map((task) => {
+      const label = task.taskName || task.taskDesc || '无名称';
+      return `${task.taskId}[${task.taskStatus}] ${label}${task.claimCode ? ` claim=${task.claimCode}` : ''}`;
+    })
+    .join(' | ');
+}
+
+function stringifyForLog(data) {
+  if (typeof data === 'string') {
+    return data;
+  }
+
+  try {
+    return JSON.stringify(data);
+  } catch (error) {
+    return String(data);
+  }
+}
+
 function findValueByKey(data, key) {
   let result;
   walkData(data, (node) => {
@@ -349,7 +404,8 @@ async function processAccount(cookie, index) {
   let task = findTask(initialTaskResponse, TASK_ID);
 
   if (!task) {
-    return `${prefix}: 未找到 ${TASK_ID} 任务`;
+    console.log(`${prefix}: jingBeanTaskList 原始返回 => ${stringifyForLog(initialTaskResponse)}`);
+    return `${prefix}: 未找到 ${TASK_ID} 任务。任务摘要：${formatTaskSummary(initialTaskResponse)}`;
   }
 
   console.log(`${prefix}: 初始状态 ${task.taskStatus}`);
@@ -376,7 +432,8 @@ async function processAccount(cookie, index) {
     const refreshedTaskResponse = await queryTaskList(cookie);
     task = findTask(refreshedTaskResponse, TASK_ID);
     if (!task) {
-      return `${prefix}: 上报后未找到 ${TASK_ID} 任务`;
+      console.log(`${prefix}: 上报后 jingBeanTaskList 原始返回 => ${stringifyForLog(refreshedTaskResponse)}`);
+      return `${prefix}: 上报后未找到 ${TASK_ID} 任务。任务摘要：${formatTaskSummary(refreshedTaskResponse)}`;
     }
   }
 
