@@ -143,6 +143,7 @@ function buildHeaders(cookie, cipherContext) {
     'Accept-Language': 'zh-CN,zh-Hans;q=0.9',
     'app-key': 'jexpress',
     'biz-type': 'service-monitor',
+    'LOP-DN': 'jingcai-http.jd.com',
     'source-client': '2',
     access: 'H5',
     'jexpress-report-time': String(Date.now()),
