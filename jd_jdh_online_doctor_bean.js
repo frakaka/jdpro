@@ -201,7 +201,7 @@ function loadJsdomDependencies() {
   };
 
   try {
-    jsdomDeps = require('./node_modules/jsdom');
+    jsdomDeps = require('jsdom');
     return jsdomDeps;
   } finally {
     Module._load = originalLoad;
