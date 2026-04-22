@@ -27,7 +27,7 @@ const {
   getUserName,
   safeJsonParse,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('超级指数节抽京豆');
 

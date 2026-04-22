@@ -21,7 +21,7 @@ const {
   postFormApi,
   sleep,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('京东校园任务领京豆');
 

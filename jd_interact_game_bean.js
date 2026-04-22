@@ -24,7 +24,7 @@ const {
   postFormApi,
   sleep,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('互动游戏浏览领京豆');
 

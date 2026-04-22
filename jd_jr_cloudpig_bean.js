@@ -18,7 +18,7 @@ const {
   getUserName,
   safeJsonParse,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('桌面组件领京豆');
 

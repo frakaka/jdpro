@@ -18,7 +18,7 @@ const {
   getUserName,
   parseApiResponse,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('京喜赚豆签到领京豆');
 

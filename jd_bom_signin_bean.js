@@ -25,7 +25,7 @@ const {
   postFormApi,
   safeJsonParse,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('五金城签到领京豆');
 

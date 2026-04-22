@@ -23,7 +23,7 @@ const {
   mergeCookieString,
   postFormApi,
   stringifySnippet,
-} = require('./function/jd_har_bean_common');
+} = require('./function/jdHarBeanCommon');
 
 const $ = new Env('买药页健康抽奖领京豆');
 
