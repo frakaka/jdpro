@@ -17,8 +17,10 @@ const jdCookieNode = require('./jdCookie.js');
 const {
   DEFAULT_JR_USER_AGENT,
   Env,
+  getGiasRiskContext,
   getUserName,
   hasJingBeanReward,
+  mergeCookieString,
   postFormApi,
   stringifySnippet,
 } = require('./function/jd_har_bean_common');
@@ -28,7 +30,13 @@ const $ = new Env('买药页健康抽奖领京豆');
 const APPID = 'laputa';
 const H5ST_APP_ID = '70777';
 const CLIENT = 'wh5';
-const PAGE_URL = 'https://laputa.jd.com/onlineDoctorWel/pages/index/index?apicode=Hospital&hy_entry=hos_zxys';
+const API_REFERER = 'https://laputa.jd.com/';
+const RISK_PAGE_URL = 'https://laputa.jd.com/lt32f7f7f0/pages/index/index?entry=bjpd';
+const FLOOR_BODY = {
+  osName: 'lt32f7f7f0',
+  version: 2,
+  functionId: 'index',
+};
 const DEFAULT_MAX_TASKS = 3;
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
@@ -53,13 +61,64 @@ async function callScratchApi(cookie, functionId, body, options = {}) {
     body,
     client: CLIENT,
     h5stAppId: H5ST_APP_ID,
+    h5stMode: 'js_security',
     h5stVersion: '5.3',
+    h5stPageUrl: RISK_PAGE_URL,
+    h5stSignKeys: ['functionId', 'appid', 'client', 'body'],
     userAgent: DEFAULT_JR_USER_AGENT,
     origin: 'https://laputa.jd.com',
-    referer: PAGE_URL,
+    referer: API_REFERER,
     includeUuid: true,
+    extraHeaders: {
+      Accept: '*/*',
+      'sec-fetch-site': 'same-site',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-dest': 'empty',
+    },
     extraForm: createExtraForm(options.includeRiskToken),
   });
+}
+
+function readSdToken(headers) {
+  const tokenHeader = headers?.['x-rp-sdtoken'] || '';
+  const parts = String(tokenHeader).split(';');
+  return parts.length >= 3 ? parts.slice(2).join(';') : '';
+}
+
+async function warmupRiskCookie(cookie) {
+  const riskContext = await getGiasRiskContext(cookie, {
+    pageUrl: RISK_PAGE_URL,
+    bizId: 'laputa',
+    userAgent: DEFAULT_JR_USER_AGENT,
+  });
+
+  const warmupResult = await postFormApi(riskContext.cookie, {
+    endpoint: 'https://api.m.jd.com/api',
+    functionId: 'jdh_laputa_queryFloorList3',
+    appid: APPID,
+    body: FLOOR_BODY,
+    client: CLIENT,
+    userAgent: DEFAULT_JR_USER_AGENT,
+    origin: 'https://laputa.jd.com',
+    referer: API_REFERER,
+    includeUuid: true,
+    includeMeta: true,
+    extraHeaders: {
+      Accept: '*/*',
+      'sec-fetch-site': 'same-site',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-dest': 'empty',
+    },
+  });
+
+  const sdToken = readSdToken(warmupResult.headers);
+  return {
+    cookie: mergeCookieString(riskContext.cookie, {
+      sdtoken: sdToken,
+    }),
+    warmupResult,
+    sdToken,
+  };
 }
 
 async function queryActivityList(cookie) {
@@ -93,7 +152,10 @@ async function runAccount(cookie, index) {
   const userName = getUserName(cookie);
   $.log(`\n==== 账号${index} ${userName} ====`);
 
-  const activityData = await queryActivityList(cookie);
+  const riskCookie = await warmupRiskCookie(cookie);
+  $.log(`账号${index} ${userName}: 风控预热 => HTTP ${riskCookie.warmupResult.statusCode}${riskCookie.sdToken ? '，已获取 sdtoken' : '，未获取 sdtoken'}`);
+
+  const activityData = await queryActivityList(riskCookie.cookie);
   const tasks = readBeanTasks(activityData);
   $.log(`账号${index} ${userName}: 识别到 ${tasks.length} 个买药页京豆任务`);
 
@@ -104,7 +166,7 @@ async function runAccount(cookie, index) {
 
   for (const task of tasks) {
     $.log(`账号${index} ${userName}: 执行任务 ${task.assignmentName || task.encryptAssignmentId}`);
-    const result = await completeTask(cookie, task);
+    const result = await completeTask(riskCookie.cookie, task);
     $.log(`账号${index} ${userName}: 任务结果 => ${stringifySnippet(result, 800)}`);
   }
 }

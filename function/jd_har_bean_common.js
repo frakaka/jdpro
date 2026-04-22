@@ -14,8 +14,18 @@ let h5stFactory = null;
 let h5stShimInstalled = false;
 
 const DEFAULT_USER_AGENT = 'jdapp;iPhone;15.6.50;;;M/5.0;appBuild/170394;jdSupportDarkMode/0;lang/zh_CN;ctype/0;site/CN;ccy/CNY;elder/0;ef/1;Mozilla/5.0 (iPhone; CPU iPhone OS 26_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148;supportJDSHWK/1;';
-const DEFAULT_JR_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/application=JDJR-App&clientType=ios&iosType=iphone&clientVersion=8.1.70&HiClVersion=8.1.70&isUpdate=0&osVersion=26.2&osName=iOS&screen=844*390&src=App Store&netWork=1&netWorkType=1&CpayJS=UnionPay/1.0 JDJR';
+const DEFAULT_JR_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/application=JDJR-App&clientType=ios&iosType=iphone&clientVersion=8.1.70&HiClVersion=8.1.70&isUpdate=0&osVersion=26.2&osName=iOS&screen=844*390&src=App Store&netWork=1&netWorkType=1&CpayJS=UnionPay/1.0 JDJR&stockSDK=stocksdk-iphone_6.0.0&sPoint=&jdPay=(*#@jdPaySDK*#@jdPayChannel=jdfinance&jdPayChannelVersion=8.1.70&jdPaySdkVersion=4.01.96.00&jdPayClientName=iOS*#@jdPaySDK*#@)';
 const REQUEST_TIMEOUT_MS = 15000;
+const DEFAULT_GIAS_SCRIPT_URL = 'https://gias.jd.com/js/m-tk.js';
+const DEFAULT_GIAS_PAGE_URL = 'https://pro.m.jd.com/';
+const GIAS_TIMEOUT_MS = 10000;
+const DEFAULT_JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.5.js?v=2406';
+
+const riskContextCache = new Map();
+const giasScriptCache = new Map();
+const jsSecurityScriptCache = new Map();
+const jsSecuritySignerCache = new Map();
+let jsdomDeps = null;
 
 function Env(name) {
   return {
@@ -44,6 +54,47 @@ function getCookieValue(cookie, key) {
   const pattern = new RegExp(`(?:^|;\\s*)${key}=([^;]*)`);
   const match = String(cookie || '').match(pattern);
   return match ? decodeURIComponent(match[1]) : '';
+}
+
+function parseCookieString(cookie) {
+  const cookieMap = new Map();
+  const items = String(cookie || '').split(';');
+
+  for (const item of items) {
+    const pair = item.trim();
+    if (!pair) {
+      continue;
+    }
+
+    const separatorIndex = pair.indexOf('=');
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = pair.slice(0, separatorIndex).trim();
+    const value = pair.slice(separatorIndex + 1).trim();
+    if (key) {
+      cookieMap.set(key, value);
+    }
+  }
+
+  return cookieMap;
+}
+
+function stringifyCookieMap(cookieMap) {
+  return Array.from(cookieMap.entries())
+    .map(([key, value]) => `${key}=${value}`)
+    .join('; ');
+}
+
+function mergeCookieString(baseCookie, extraCookieValues) {
+  const cookieMap = parseCookieString(baseCookie);
+  for (const [key, value] of Object.entries(extraCookieValues || {})) {
+    if (value) {
+      cookieMap.set(key, value);
+    }
+  }
+  return stringifyCookieMap(cookieMap);
 }
 
 function getRequestUuid(cookie) {
@@ -194,12 +245,193 @@ async function createH5st(options) {
   return new URLSearchParams(query).get('h5st') || '';
 }
 
+async function getJsSecurityScript(scriptUrl, options = {}) {
+  const {
+    referer = 'https://laputa.jd.com/',
+    userAgent = DEFAULT_JR_USER_AGENT,
+  } = options;
+
+  if (jsSecurityScriptCache.has(scriptUrl)) {
+    return jsSecurityScriptCache.get(scriptUrl);
+  }
+
+  const response = await got.get(scriptUrl, {
+    headers: {
+      Referer: referer,
+      'User-Agent': userAgent,
+    },
+    throwHttpErrors: false,
+    timeout: { request: REQUEST_TIMEOUT_MS },
+  });
+  const scriptSource = response.body || '';
+  if (!scriptSource || response.statusCode >= 400) {
+    throw new Error(`js_security 脚本加载失败：HTTP ${response.statusCode}`);
+  }
+
+  jsSecurityScriptCache.set(scriptUrl, scriptSource);
+  return scriptSource;
+}
+
+function createNodeXmlHttpRequest(window, options = {}) {
+  const {
+    cookie = '',
+    userAgent = DEFAULT_JR_USER_AGENT,
+  } = options;
+
+  return class NodeXmlHttpRequest {
+    constructor() {
+      this.headers = {};
+      this.readyState = 0;
+      this.status = 0;
+      this.responseText = '';
+      this.response = '';
+    }
+
+    open(method, url) {
+      this.method = method;
+      this.url = url;
+      this.readyState = 1;
+    }
+
+    setRequestHeader(key, value) {
+      this.headers[key] = value;
+    }
+
+    getAllResponseHeaders() {
+      return '';
+    }
+
+    getResponseHeader() {
+      return null;
+    }
+
+    async send(body) {
+      try {
+        const requestMethod = String(this.method || 'GET').toUpperCase();
+        const requestOptions = {
+          method: requestMethod,
+          headers: {
+            ...this.headers,
+            Cookie: cookie,
+            Origin: window.location.origin,
+            Referer: window.location.href,
+            'User-Agent': userAgent,
+          },
+          throwHttpErrors: false,
+          timeout: { request: REQUEST_TIMEOUT_MS },
+        };
+        if (!['GET', 'HEAD'].includes(requestMethod) && body) {
+          requestOptions.body = body;
+        }
+        const response = await got(this.url, {
+          ...requestOptions,
+        });
+        this.status = response.statusCode;
+        this.responseText = response.body || '';
+        this.response = this.responseText;
+      } catch (error) {
+        this.status = 0;
+        this.responseText = '';
+        this.response = '';
+        if (typeof this.onerror === 'function') {
+          this.onerror(error);
+        }
+      } finally {
+        this.readyState = 4;
+        if (typeof this.onreadystatechange === 'function') {
+          this.onreadystatechange();
+        }
+        if (typeof this.onload === 'function') {
+          this.onload();
+        }
+      }
+    }
+
+    abort() {}
+  };
+}
+
+async function getJsSecuritySigner(options = {}) {
+  const {
+    h5stAppId,
+    cookie = '',
+    pageUrl = 'https://laputa.jd.com/',
+    scriptUrl = DEFAULT_JS_SECURITY_SCRIPT_URL,
+    userAgent = DEFAULT_JR_USER_AGENT,
+  } = options;
+  const cacheKey = `${h5stAppId}:${pageUrl}:${userAgent}:${getUserName(cookie)}`;
+
+  if (jsSecuritySignerCache.has(cacheKey)) {
+    return jsSecuritySignerCache.get(cacheKey);
+  }
+
+  const signerPromise = (async () => {
+    const { JSDOM, VirtualConsole } = loadJsdomDependencies();
+    const virtualConsole = new VirtualConsole();
+    const scriptSource = await getJsSecurityScript(scriptUrl, { referer: pageUrl, userAgent });
+    const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+      url: pageUrl,
+      referrer: pageUrl,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      resources: 'usable',
+      virtualConsole,
+    });
+
+    const { window } = dom;
+    patchRiskWindow(window, { bizId: 'laputa', userAgent });
+    window.XMLHttpRequest = createNodeXmlHttpRequest(window, { cookie, userAgent });
+    window.eval(scriptSource);
+
+    if (typeof window.ParamsSign !== 'function') {
+      dom.window.close();
+      throw new Error('js_security 未暴露 ParamsSign');
+    }
+
+    const signer = new window.ParamsSign({
+      appId: h5stAppId,
+    });
+
+    if (typeof signer._$rds === 'function') {
+      signer._$rds();
+    }
+    if (typeof signer._$rgo === 'function') {
+      await signer._$rgo();
+    }
+
+    return {
+      dom,
+      signer,
+    };
+  })();
+
+  jsSecuritySignerCache.set(cacheKey, signerPromise);
+  return signerPromise;
+}
+
+async function createJsSecurityH5st(options = {}) {
+  const {
+    h5stAppId,
+    formFields,
+  } = options;
+  const signerContext = await getJsSecuritySigner(options);
+  const signResult = await signerContext.signer.sign({ ...formFields });
+  const h5st = signResult?.h5st || '';
+
+  if (!h5st) {
+    throw new Error(`js_security 未生成 h5st: ${stringifySnippet(signResult, 300)}`);
+  }
+
+  return h5st;
+}
+
 function buildHeaders(cookie, options = {}) {
   const {
     origin = 'https://pro.m.jd.com',
     referer = 'https://pro.m.jd.com/',
     userAgent = getUserAgent(),
     contentType = 'application/x-www-form-urlencoded',
+    extraHeaders = {},
   } = options;
 
   const headers = {
@@ -215,7 +447,274 @@ function buildHeaders(cookie, options = {}) {
     headers['Content-Type'] = contentType;
   }
 
-  return headers;
+  return {
+    ...headers,
+    ...extraHeaders,
+  };
+}
+
+function loadJsdomDependencies() {
+  if (jsdomDeps) {
+    return jsdomDeps;
+  }
+
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request) {
+    if (request === 'canvas') {
+      return {};
+    }
+    return originalLoad.apply(this, arguments);
+  };
+
+  try {
+    jsdomDeps = require('jsdom');
+    return jsdomDeps;
+  } finally {
+    Module._load = originalLoad;
+  }
+}
+
+function patchRiskWindow(window, options = {}) {
+  const {
+    bizId = 'laputa',
+    userAgent = DEFAULT_JR_USER_AGENT,
+    screenWidth = 390,
+    screenHeight = 844,
+  } = options;
+
+  Object.defineProperty(window.navigator, 'userAgent', {
+    configurable: true,
+    value: userAgent,
+  });
+  Object.defineProperty(window.navigator, 'platform', {
+    configurable: true,
+    value: 'iPhone',
+  });
+  Object.defineProperty(window.navigator, 'language', {
+    configurable: true,
+    value: 'zh-CN',
+  });
+  Object.defineProperty(window.navigator, 'languages', {
+    configurable: true,
+    value: ['zh-CN', 'zh'],
+  });
+  Object.defineProperty(window.navigator, 'hardwareConcurrency', {
+    configurable: true,
+    value: 8,
+  });
+  Object.defineProperty(window.navigator, 'plugins', {
+    configurable: true,
+    value: [],
+  });
+  Object.defineProperty(window.navigator, 'mimeTypes', {
+    configurable: true,
+    value: [],
+  });
+  Object.defineProperty(window.screen, 'width', {
+    configurable: true,
+    value: screenWidth,
+  });
+  Object.defineProperty(window.screen, 'height', {
+    configurable: true,
+    value: screenHeight,
+  });
+  Object.defineProperty(window.screen, 'availWidth', {
+    configurable: true,
+    value: screenWidth,
+  });
+  Object.defineProperty(window.screen, 'availHeight', {
+    configurable: true,
+    value: screenHeight,
+  });
+  Object.defineProperty(window.screen, 'colorDepth', {
+    configurable: true,
+    value: 24,
+  });
+  Object.defineProperty(window.HTMLCanvasElement.prototype, 'toDataURL', {
+    configurable: true,
+    value() {
+      return 'data:image/png;base64,AA==';
+    },
+  });
+  Object.defineProperty(window.HTMLCanvasElement.prototype, 'getContext', {
+    configurable: true,
+    value(type) {
+      if (type === '2d') {
+        return {
+          textBaseline: 'top',
+          font: '14px Arial',
+          fillStyle: '#f60',
+          fillRect() {},
+          fillText() {},
+          beginPath() {},
+          arc() {},
+          closePath() {},
+          fill() {},
+          stroke() {},
+          measureText() {
+            return { width: 10 };
+          },
+          getImageData() {
+            return { data: new Uint8ClampedArray(16) };
+          },
+        };
+      }
+
+      return {
+        getParameter() {
+          return 1;
+        },
+        getExtension() {
+          return null;
+        },
+        createBuffer() {
+          return {};
+        },
+        bindBuffer() {},
+        bufferData() {},
+        createProgram() {
+          return {};
+        },
+        createShader() {
+          return {};
+        },
+        shaderSource() {},
+        compileShader() {},
+        attachShader() {},
+        linkProgram() {},
+        useProgram() {},
+        getAttribLocation() {
+          return 0;
+        },
+        getUniformLocation() {
+          return {};
+        },
+        enableVertexAttribArray() {},
+        vertexAttribPointer() {},
+        uniform2f() {},
+        drawArrays() {},
+        canvas: {
+          toDataURL() {
+            return 'data:image/png;base64,AA==';
+          },
+        },
+      };
+    },
+  });
+
+  window.console = {
+    log() {},
+    info() {},
+    warn() {},
+    error() {},
+    debug() {},
+  };
+  window.bp_bizid = bizId;
+}
+
+async function getGiasScript(scriptUrl, options = {}) {
+  const {
+    referer = DEFAULT_GIAS_PAGE_URL,
+    userAgent = DEFAULT_JR_USER_AGENT,
+  } = options;
+
+  if (giasScriptCache.has(scriptUrl)) {
+    return giasScriptCache.get(scriptUrl);
+  }
+
+  const response = await got.get(scriptUrl, {
+    headers: {
+      Referer: referer,
+      'User-Agent': userAgent,
+    },
+    throwHttpErrors: false,
+    timeout: { request: GIAS_TIMEOUT_MS },
+  });
+  const scriptSource = response.body || '';
+  if (!scriptSource || response.statusCode >= 400) {
+    throw new Error(`gias 脚本加载失败：HTTP ${response.statusCode}`);
+  }
+
+  giasScriptCache.set(scriptUrl, scriptSource);
+  return scriptSource;
+}
+
+async function getGiasRiskContext(cookie, options = {}) {
+  const {
+    pageUrl = DEFAULT_GIAS_PAGE_URL,
+    scriptUrl = DEFAULT_GIAS_SCRIPT_URL,
+    bizId = 'laputa',
+    userAgent = DEFAULT_JR_USER_AGENT,
+    timeoutMs = GIAS_TIMEOUT_MS,
+  } = options;
+  const cacheKey = `${getUserName(cookie)}:${bizId}:${userAgent}`;
+
+  if (riskContextCache.has(cacheKey)) {
+    return riskContextCache.get(cacheKey);
+  }
+
+  const riskContextPromise = (async () => {
+    const { JSDOM, VirtualConsole } = loadJsdomDependencies();
+    const virtualConsole = new VirtualConsole();
+    const scriptSource = await getGiasScript(scriptUrl, { referer: pageUrl, userAgent });
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+      url: pageUrl,
+      referrer: pageUrl,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      resources: 'usable',
+      virtualConsole,
+    });
+
+    try {
+      const { window } = dom;
+      patchRiskWindow(window, { bizId, userAgent });
+
+      const sourceCookieMap = parseCookieString(cookie);
+      for (const [key, value] of sourceCookieMap.entries()) {
+        window.document.cookie = `${key}=${value}; path=/`;
+      }
+
+      window.eval(scriptSource);
+
+      const tokenResult = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error('gias 获取 jsToken 超时'));
+        }, timeoutMs);
+
+        window.getJsToken((result) => {
+          clearTimeout(timer);
+          resolve(result || {});
+        }, timeoutMs);
+      });
+
+      const riskCookieMap = parseCookieString(window.document.cookie);
+      const jsToken = riskCookieMap.get('3AB9D23F7A4B3CSS') || tokenResult.jsToken || '';
+      const equipmentId = riskCookieMap.get('3AB9D23F7A4B3C9B') || tokenResult.eid || '';
+      const giaD = riskCookieMap.get('_gia_d') || '1';
+
+      if (!jsToken) {
+        throw new Error(`gias 未返回有效 jsToken: ${stringifySnippet(tokenResult, 300)}`);
+      }
+
+      return {
+        jsToken,
+        equipmentId,
+        giaD,
+        cookie: mergeCookieString(cookie, {
+          '3AB9D23F7A4B3CSS': jsToken,
+          '3AB9D23F7A4B3C9B': equipmentId,
+          _gia_d: giaD,
+          equipmentId,
+        }),
+      };
+    } finally {
+      dom.window.close();
+    }
+  })();
+
+  riskContextCache.set(cacheKey, riskContextPromise);
+  return riskContextPromise;
 }
 
 async function postFormApi(cookie, options) {
@@ -228,12 +727,18 @@ async function postFormApi(cookie, options) {
     loginType = '',
     loginWQBiz = '',
     h5stAppId = '',
+    h5stMode = 'h5st41',
     h5stVersion = '5.3',
+    h5stScriptUrl = DEFAULT_JS_SECURITY_SCRIPT_URL,
+    h5stSignKeys = [],
     userAgent = getUserAgent(),
     origin,
     referer,
+    h5stPageUrl = referer || origin || 'https://pro.m.jd.com/',
     extraForm = {},
+    extraHeaders = {},
     includeUuid = false,
+    includeMeta = false,
   } = options;
 
   const bodyText = typeof body === 'string' ? body : JSON.stringify(body);
@@ -253,27 +758,55 @@ async function postFormApi(cookie, options) {
   }
 
   if (h5stAppId) {
-    const h5st = await createH5st({
-      functionId,
-      body,
-      h5stAppId,
-      requestAppid: appid,
-      cookie,
-      userAgent,
-      client: client || 'wh5',
-      version: h5stVersion,
-    });
+    const allFormFields = Object.fromEntries(form.entries());
+    const formFields = h5stSignKeys.length
+      ? h5stSignKeys.reduce((fields, key) => {
+        if (allFormFields[key]) {
+          fields[key] = allFormFields[key];
+        }
+        return fields;
+      }, {})
+      : allFormFields;
+    const h5st = h5stMode === 'js_security'
+      ? await createJsSecurityH5st({
+        h5stAppId,
+        formFields,
+        cookie,
+        userAgent,
+        pageUrl: h5stPageUrl,
+        scriptUrl: h5stScriptUrl,
+      })
+      : await createH5st({
+        functionId,
+        body,
+        h5stAppId,
+        requestAppid: appid,
+        cookie,
+        userAgent,
+        client: client || 'wh5',
+        version: h5stVersion,
+      });
     appendFormValue(form, 'h5st', h5st);
   }
 
   const response = await got.post(`${endpoint}?functionId=${encodeURIComponent(functionId)}`, {
     body: form.toString(),
-    headers: buildHeaders(cookie, { origin, referer, userAgent }),
+    headers: buildHeaders(cookie, { origin, referer, userAgent, extraHeaders }),
     throwHttpErrors: false,
     timeout: { request: REQUEST_TIMEOUT_MS },
   });
 
-  return parseApiResponse(response);
+  const data = parseApiResponse(response);
+  if (includeMeta) {
+    return {
+      data,
+      headers: response.headers,
+      statusCode: response.statusCode,
+      body: response.body || '',
+    };
+  }
+
+  return data;
 }
 
 async function getQueryApi(cookie, options) {
@@ -344,14 +877,18 @@ function hasJingBeanReward(task) {
 module.exports = {
   buildHeaders,
   createH5st,
+  createJsSecurityH5st,
   DEFAULT_JR_USER_AGENT,
   DEFAULT_USER_AGENT,
   Env,
   getQueryApi,
+  getGiasRiskContext,
   getRequestUuid,
   getUserAgent,
   getUserName,
   hasJingBeanReward,
+  mergeCookieString,
+  parseCookieString,
   postFormApi,
   parseApiResponse,
   safeJsonParse,
