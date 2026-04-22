@@ -216,9 +216,12 @@ async function getCrypticoApi() {
           },
         });
 
-        const cryptico = eval(
-          `(function(){var window={};var self=window;var navigator={userAgent:${JSON.stringify(USER_AGENT)}};var localStorage={getItem:function(key){return localStorageStore.has(key)?localStorageStore.get(key):null;},setItem:function(key,value){localStorageStore.set(key,String(value));},removeItem:function(key){localStorageStore.delete(key);}};var document=documentObject;${scriptContent};return cryptico;})()`,
+        const loadCryptico = new Function(
+          'localStorageStore',
+          'documentObject',
+          `var window=this;var self=window;var globalThis=window;var global=window;var navigator={userAgent:${JSON.stringify(USER_AGENT)},appName:"Netscape",appVersion:"5"};var localStorage={getItem:function(key){return localStorageStore.has(key)?localStorageStore.get(key):null;},setItem:function(key,value){localStorageStore.set(key,String(value));},removeItem:function(key){localStorageStore.delete(key);}};var document=documentObject;var aesjs=null;${scriptContent};aesjs=window.aesjs||globalThis.aesjs||aesjs;return cryptico;`,
         );
+        const cryptico = loadCryptico.call({}, localStorageStore, documentObject);
         return cryptico;
       });
   }
@@ -256,8 +259,8 @@ async function encryptBusinessData(data) {
   const [cryptico, publicKey] = await Promise.all([getCrypticoApi(), getRsaPublicKey()]);
   cryptico.setPublicKeyString(JSON.stringify(publicKey));
   const encrypted = cryptico.encryptData(JSON.stringify(data));
-  if (!encrypted?.success || !encrypted.cipher) {
-    throw new Error('京东金融 bodyEncrypt 生成失败');
+  if (!encrypted?.status || !encrypted.cipher) {
+    throw new Error(`京东金融 bodyEncrypt 生成失败: ${JSON.stringify(encrypted)}`);
   }
   return encrypted.cipher;
 }
