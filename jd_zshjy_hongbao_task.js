@@ -148,42 +148,12 @@ function getDeviceUuid(cookie) {
   return process.env.JD_ZSHJY_HONGBAO_UUID || cookieMap.get('deviceid_pdj_jd') || cookieMap.get('deviceId') || '224e6c34e7638196d45b7006b8f1713f8d4ec463';
 }
 
-function buildNormalizedUrl(source) {
-  if (!source) {
-    return '';
-  }
-
-  let sourceUrl;
-  try {
-    sourceUrl = new URL(source);
-  } catch (error) {
-    return String(source);
-  }
-
-  const url = new URL(sourceUrl.origin + sourceUrl.pathname);
-  const activityMatch = url.pathname.match(/\/mall\/active\/([^/]+)\/index\.html/);
-  if (activityMatch) {
-    const activityId = activityMatch[1];
-    const babelChannel = sourceUrl.searchParams.get('babelChannel');
-    url.searchParams.set('mTabId', sourceUrl.searchParams.get('mTabId') || activityId);
-    url.searchParams.set('hybrid_err_view', sourceUrl.searchParams.get('hybrid_err_view') || '1');
-    url.searchParams.set('jwebprog', sourceUrl.searchParams.get('jwebprog') || '0');
-    url.searchParams.set('showTask', sourceUrl.searchParams.get('showTask') || '1');
-    if (babelChannel) {
-      url.searchParams.set('babelChannel', babelChannel);
-    }
-    return url.toString();
-  }
-
-  return source;
-}
-
 function getTaskItemUrl(task, item) {
   return item?.itemId || item?.itemUrl || item?.clickUrl || task?.taskSourceUrl || '';
 }
 
-function buildNormalizedTaskUrl(task, item) {
-  return buildNormalizedUrl(getTaskItemUrl(task, item));
+function buildTaskApiItemId(task, item) {
+  return getTaskItemUrl(task, item);
 }
 
 function getTaskItems(task) {
@@ -194,6 +164,24 @@ function getTaskItems(task) {
 
   const sourceUrl = task?.taskSourceUrl || '';
   return sourceUrl ? [{ itemId: sourceUrl, taskInsert: false, pipeExt: {} }] : [];
+}
+
+function isBrowseTask(task) {
+  return ['BROWSE_CHANNEL', 'BROWSE_PRODUCT'].includes(String(task?.taskType || ''));
+}
+
+function isTaskCompleted(task) {
+  return Boolean(
+    task?.taskFinished ||
+      task?.status?.finished ||
+      task?.status?.alreadyGranted ||
+      task?.finished ||
+      task?.alreadyGranted,
+  );
+}
+
+function isTaskItemCompleted(item) {
+  return Boolean(item?.isReceived || item?.taskFinished || item?.finished || item?.alreadyGranted || item?.status?.finished || item?.status?.alreadyGranted);
 }
 
 function getTaskAssignmentId(task) {
@@ -351,7 +339,7 @@ async function startTaskTime(cookie, task, item) {
   const body = {
     linkId: LINK_ID,
     taskId: task?.id,
-    itemId: buildNormalizedTaskUrl(task, item),
+    itemId: buildTaskApiItemId(task, item),
     channel: 4,
     pipeExt: getTaskPipeExt(task, item),
   };
@@ -395,7 +383,7 @@ async function doTask(cookie, task, item) {
       checkVersion: true,
       pipeExt: getTaskPipeExt(task, item),
       taskInsert: item?.taskInsert ?? false,
-      itemId: buildNormalizedTaskUrl(task, item),
+      itemId: buildTaskApiItemId(task, item),
     },
     {
       h5stAppId: DO_TASK_H5ST_APP_ID,
@@ -480,24 +468,35 @@ function summarizeTask(task, item = null) {
 async function buildPendingTasks(cookie, taskListResult, prefix) {
   const tasks = Array.isArray(taskListResult?.data) ? taskListResult.data : [];
   const pendingTasks = [];
+  const stats = {
+    completedTasks: 0,
+    detailCompletedTasks: 0,
+    completedItems: 0,
+    noItemTasks: 0,
+  };
 
   for (const task of tasks) {
-    const isFinished = Boolean(task.taskFinished);
-    const taskType = String(task.taskType || '');
-    const isBrowseTask = ['BROWSE_CHANNEL', 'BROWSE_PRODUCT'].includes(taskType);
     const assignmentId = getTaskAssignmentId(task);
-    if (isFinished || !isBrowseTask || !assignmentId || !task?.id) {
+    if (!isBrowseTask(task) || !assignmentId || !task?.id) {
+      continue;
+    }
+    if (isTaskCompleted(task)) {
+      stats.completedTasks += 1;
       continue;
     }
 
     let taskWithItems = task;
-    let items = getTaskItems(taskWithItems).filter((item) => getTaskItemUrl(taskWithItems, item));
+    let items = getTaskItems(taskWithItems).filter((item) => getTaskItemUrl(taskWithItems, item) && !isTaskItemCompleted(item));
     if (!items.length) {
       const detailResult = await queryTaskDetail(cookie, task);
       if (isDebugEnabled()) {
         $.log(`${prefix}: apTaskDetail ${task.id} => ${stringifySnippet(detailResult, 1000)}`);
       }
       if (Number(detailResult?.code ?? -1) === 0 && detailResult?.data) {
+        if (isTaskCompleted(detailResult.data)) {
+          stats.detailCompletedTasks += 1;
+          continue;
+        }
         taskWithItems = {
           ...task,
           ...detailResult.data,
@@ -506,14 +505,25 @@ async function buildPendingTasks(cookie, taskListResult, prefix) {
             ...(detailResult.data.pipeExt || {}),
           },
         };
-        items = getTaskItems(taskWithItems).filter((item) => getTaskItemUrl(taskWithItems, item));
+        const detailItems = getTaskItems(taskWithItems).filter((item) => getTaskItemUrl(taskWithItems, item));
+        items = detailItems.filter((item) => !isTaskItemCompleted(item));
+        stats.completedItems += detailItems.length - items.length;
       }
+    }
+
+    if (!items.length) {
+      stats.noItemTasks += 1;
+      continue;
     }
 
     for (const item of items) {
       pendingTasks.push({ task: taskWithItems, item });
     }
   }
+
+  $.log(
+    `${prefix}: 任务过滤 => 顶层已完成${stats.completedTasks}个，明细已完成${stats.detailCompletedTasks}个，已完成item${stats.completedItems}个，无可执行item${stats.noItemTasks}个`,
+  );
 
   return pendingTasks.sort((leftEntry, rightEntry) => getPendingTaskPriority(rightEntry) - getPendingTaskPriority(leftEntry));
 }
@@ -604,7 +614,8 @@ async function runAccount(cookie, index) {
     return;
   }
 
-  $.log(`${prefix}: 任务列表 => ${taskList.map((task) => summarizeTask(task)).join(' || ')}`);
+  const activeTaskList = taskList.filter((task) => isBrowseTask(task) && !isTaskCompleted(task));
+  $.log(`${prefix}: 未完成浏览任务列表 => ${activeTaskList.map((task) => summarizeTask(task)).join(' || ') || '空'}`);
 
   const allPendingTasks = await buildPendingTasks(activityCookie, taskListResult, prefix);
   const maxTasks = getMaxTasks();
