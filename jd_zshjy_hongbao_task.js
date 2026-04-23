@@ -25,7 +25,7 @@ cron:24 0 * * * jd_zshjy_hongbao_task.js
 
 6. JD_ZSHJY_HONGBAO_MAX_TASKS
    含义：最多尝试多少个未完成浏览任务。
-   默认值：5。
+   默认值：不限制，按任务列表顺序逐个尝试。配置为正整数时限制尝试数量。
 
 7. JD_ZSHJY_HONGBAO_MAX_DRAWS
    含义：最多执行多少次抽奖。
@@ -89,7 +89,6 @@ const DEFAULT_OS_VERSION = '26.2';
 const DEFAULT_PARTNER = '-1';
 const DEFAULT_AREA = '18_1482_48938_54602';
 const DEFAULT_BROWSE_WAIT_MS = 10 * 1000;
-const DEFAULT_MAX_TASKS = 5;
 const DEFAULT_MAX_DRAWS = 10;
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
@@ -106,11 +105,19 @@ function readPositiveInt(value, fallback) {
 }
 
 function getMaxTasks() {
-  return readPositiveInt(process.env.JD_ZSHJY_HONGBAO_MAX_TASKS, DEFAULT_MAX_TASKS);
+  const configuredValue = process.env.JD_ZSHJY_HONGBAO_MAX_TASKS;
+  if (!configuredValue) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return readPositiveInt(configuredValue, Number.POSITIVE_INFINITY);
 }
 
 function getMaxDraws() {
   return readPositiveInt(process.env.JD_ZSHJY_HONGBAO_MAX_DRAWS, DEFAULT_MAX_DRAWS);
+}
+
+function formatTaskLimit(taskLimit) {
+  return Number.isFinite(taskLimit) ? String(taskLimit) : '不限制';
 }
 
 function getTaskArea() {
@@ -599,8 +606,10 @@ async function runAccount(cookie, index) {
 
   $.log(`${prefix}: 任务列表 => ${taskList.map((task) => summarizeTask(task)).join(' || ')}`);
 
-  const pendingTasks = (await buildPendingTasks(activityCookie, taskListResult, prefix)).slice(0, getMaxTasks());
-  $.log(`${prefix}: 待执行浏览任务数 => ${pendingTasks.length}，任务上限=${getMaxTasks()}`);
+  const allPendingTasks = await buildPendingTasks(activityCookie, taskListResult, prefix);
+  const maxTasks = getMaxTasks();
+  const pendingTasks = Number.isFinite(maxTasks) ? allPendingTasks.slice(0, maxTasks) : allPendingTasks;
+  $.log(`${prefix}: 待执行浏览任务数 => ${pendingTasks.length}，任务上限=${formatTaskLimit(maxTasks)}`);
   if (!pendingTasks.length) {
     $.log(`${prefix}: 没有可尝试的未完成浏览任务，继续尝试抽奖`);
   }
@@ -611,6 +620,7 @@ async function runAccount(cookie, index) {
       continue;
     }
 
+    let waitedForTask = false;
     try {
       $.log(`${prefix}: 尝试任务 => ${summarizeTask(task, item)}`);
       const itemUrl = getTaskItemUrl(task, item);
@@ -630,6 +640,7 @@ async function runAccount(cookie, index) {
           const waitMs = getBrowseWaitMs(task);
           $.log(`${prefix}: apsDoTask 成功，等待 ${Math.ceil(waitMs / 1000)} 秒后领取任务奖励`);
           await sleep(waitMs);
+          waitedForTask = true;
           const drawAwardResult = await drawTaskAward(activityCookie, task);
           $.log(`${prefix}: apTaskDrawAward 领取任务奖励 => ${stringifySnippet(drawAwardResult, 800)}`);
         } else if (Number(doTaskResult?.code ?? -1) === 2005) {
@@ -645,6 +656,7 @@ async function runAccount(cookie, index) {
         const waitMs = getBrowseWaitMs(task);
         $.log(`${prefix}: 启动计时成功，等待 ${Math.ceil(waitMs / 1000)} 秒后完成限时任务`);
         await sleep(waitMs);
+        waitedForTask = true;
         const pollResult = await inviteFissionPoll(activityCookie);
         $.log(`${prefix}: inviteFissionPoll 单次刷新 => ${stringifySnippet(pollResult, 800)}`);
         const limitResult = await doLimitTimeTask(activityCookie);
@@ -668,6 +680,12 @@ async function runAccount(cookie, index) {
       }
     } catch (error) {
       $.log(`${prefix}: 当前任务异常，跳过继续下一个 => ${summarizeTask(task, item)}，错误=${error.message || error}`);
+    } finally {
+      if (!waitedForTask) {
+        const waitMs = getBrowseWaitMs(task);
+        $.log(`${prefix}: 当前任务未进入成功计时等待，补充等待 ${Math.ceil(waitMs / 1000)} 秒后继续下一个`);
+        await sleep(waitMs);
+      }
     }
   }
 
