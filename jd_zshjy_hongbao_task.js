@@ -29,9 +29,13 @@ cron:24 0 * * * jd_zshjy_hongbao_task.js
 
 7. JD_ZSHJY_HONGBAO_MAX_DRAWS
    含义：最多执行多少次抽奖。
-   默认值：10。
+   默认值：不限制，按首页返回的已抽奖次数执行。配置为正整数时限制尝试数量。
 
-8. JD_ZSHJY_HONGBAO_DEBUG
+8. JD_ZSHJY_HONGBAO_DRAW_INTERVAL_MS
+   含义：每次抽奖之间的等待毫秒数。
+   默认值：3000。
+
+9. JD_ZSHJY_HONGBAO_DEBUG
    含义：是否打印接口原始返回片段。
    默认值：0，配置为 1 开启。
 */
@@ -89,7 +93,7 @@ const DEFAULT_OS_VERSION = '26.2';
 const DEFAULT_PARTNER = '-1';
 const DEFAULT_AREA = '18_1482_48938_54602';
 const DEFAULT_BROWSE_WAIT_MS = 10 * 1000;
-const DEFAULT_MAX_DRAWS = 10;
+const DEFAULT_DRAW_INTERVAL_MS = 3000;
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
 
@@ -113,7 +117,15 @@ function getMaxTasks() {
 }
 
 function getMaxDraws() {
-  return readPositiveInt(process.env.JD_ZSHJY_HONGBAO_MAX_DRAWS, DEFAULT_MAX_DRAWS);
+  const configuredValue = process.env.JD_ZSHJY_HONGBAO_MAX_DRAWS;
+  if (!configuredValue) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return readPositiveInt(configuredValue, Number.POSITIVE_INFINITY);
+}
+
+function getDrawIntervalMs() {
+  return readPositiveInt(process.env.JD_ZSHJY_HONGBAO_DRAW_INTERVAL_MS, DEFAULT_DRAW_INTERVAL_MS);
 }
 
 function formatTaskLimit(taskLimit) {
@@ -556,25 +568,31 @@ function getPendingTaskPriority(entry) {
   return score;
 }
 
-function readDrawTimes(homeResult) {
-  return Number(homeResult?.data?.drawPrizeNum || 0);
+function readDrawAttemptTimes(homeResult) {
+  return Number(homeResult?.data?.prizeNum || 0);
 }
 
 async function performDraws(cookie, prefix, drawTimes) {
   const requestedTimes = Number(drawTimes || 0);
-  const totalTimes = Math.min(Math.max(requestedTimes, 0), getMaxDraws());
+  const maxDraws = getMaxDraws();
+  const totalTimes = Number.isFinite(maxDraws) ? Math.min(Math.max(requestedTimes, 0), maxDraws) : Math.max(requestedTimes, 0);
   if (!totalTimes) {
     $.log(`${prefix}: 当前没有可执行抽奖次数`);
     return;
   }
 
-  $.log(`${prefix}: 开始抽奖，共尝试 ${totalTimes} 次`);
+  const intervalMs = getDrawIntervalMs();
+  $.log(`${prefix}: 开始抽奖，共尝试 ${totalTimes} 次，间隔 ${intervalMs}ms`);
   for (let index = 0; index < totalTimes; index += 1) {
-    const drawResult = await inviteFissionDrawPrize(cookie);
-    $.log(`${prefix}: 第 ${index + 1} 次抽奖出奖 => ${stringifySnippet(drawResult, 1200)}`);
+    try {
+      const drawResult = await inviteFissionDrawPrize(cookie);
+      $.log(`${prefix}: 第 ${index + 1} 次抽奖出奖 => ${stringifySnippet(drawResult, 1200)}`);
+    } catch (error) {
+      $.log(`${prefix}: 第 ${index + 1} 次抽奖异常，继续下一次 => ${error.message || error}`);
+    }
 
-    if (Number(drawResult?.code ?? -1) !== 0) {
-      break;
+    if (index < totalTimes - 1) {
+      await sleep(intervalMs);
     }
   }
 }
@@ -705,7 +723,7 @@ async function runAccount(cookie, index) {
     $.log(
       `${prefix}: 刷新后首页状态 => 当前抽奖次数=${refreshedHomeResult?.data?.drawPrizeNum ?? 0}，已中奖次数=${refreshedHomeResult?.data?.prizeNum ?? 0}`,
     );
-    await performDraws(activityCookie, prefix, readDrawTimes(refreshedHomeResult));
+    await performDraws(activityCookie, prefix, readDrawAttemptTimes(refreshedHomeResult));
   } else {
     $.log(`${prefix}: 刷新首页失败 => ${stringifySnippet(refreshedHomeResult, 800)}`);
   }
