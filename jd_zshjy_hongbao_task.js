@@ -207,7 +207,7 @@ function getTaskPipeExt(task, item) {
 }
 
 function isTimerTask(task, item) {
-  return getTaskTimeLimitSwitch(task, item) === 1;
+  return getTaskTimeLimitSwitch(task, item) >= 1;
 }
 
 function buildExt(extraFields = {}) {
@@ -508,7 +508,35 @@ async function buildPendingTasks(cookie, taskListResult, prefix) {
     }
   }
 
-  return pendingTasks;
+  return pendingTasks.sort((leftEntry, rightEntry) => getPendingTaskPriority(rightEntry) - getPendingTaskPriority(leftEntry));
+}
+
+function getPendingTaskPriority(entry) {
+  const { task, item } = entry;
+  const itemUrl = getTaskItemUrl(task, item);
+  const taskType = String(task?.taskType || '');
+  let score = 0;
+
+  if (taskType === 'BROWSE_PRODUCT') {
+    score += 100;
+  }
+  if (/^\d+$/.test(itemUrl)) {
+    score += 80;
+  }
+  if (isTimerTask(task, item)) {
+    score += 20;
+  }
+  if (itemUrl.includes('pro.m.jd.com/mall/active/')) {
+    score += 10;
+  }
+  if (itemUrl.includes('showTask=1')) {
+    score += 5;
+  }
+  if (itemUrl.includes('floating=true')) {
+    score -= 10;
+  }
+
+  return score;
 }
 
 function readDrawTimes(homeResult) {
@@ -583,59 +611,63 @@ async function runAccount(cookie, index) {
       continue;
     }
 
-    $.log(`${prefix}: 尝试任务 => ${summarizeTask(task, item)}`);
-    const itemUrl = getTaskItemUrl(task, item);
-    if (itemUrl) {
-      $.log(`${prefix}: 对应会场 => ${itemUrl}`);
-    }
+    try {
+      $.log(`${prefix}: 尝试任务 => ${summarizeTask(task, item)}`);
+      const itemUrl = getTaskItemUrl(task, item);
+      if (itemUrl) {
+        $.log(`${prefix}: 对应会场 => ${itemUrl}`);
+      }
 
-    if (!isTimerTask(task, item)) {
+      if (!isTimerTask(task, item)) {
+        const doTaskResult = await doTask(activityCookie, task, item);
+        $.log(`${prefix}: apsDoTask 执行任务 => ${stringifySnippet(doTaskResult, 800)}`);
+        if (Number(doTaskResult?.code ?? -1) === 0) {
+          completedTaskIds.add(task.id);
+          if (doTaskResult?.data?.alreadyGranted || doTaskResult?.data?.finished) {
+            $.log(`${prefix}: apsDoTask 已完成并发放奖励`);
+            continue;
+          }
+          const waitMs = getBrowseWaitMs(task);
+          $.log(`${prefix}: apsDoTask 成功，等待 ${Math.ceil(waitMs / 1000)} 秒后领取任务奖励`);
+          await sleep(waitMs);
+          const drawAwardResult = await drawTaskAward(activityCookie, task);
+          $.log(`${prefix}: apTaskDrawAward 领取任务奖励 => ${stringifySnippet(drawAwardResult, 800)}`);
+        } else if (Number(doTaskResult?.code ?? -1) === 2005) {
+          completedTaskIds.add(task.id);
+        }
+        continue;
+      }
+
+      const startResult = await startTaskTime(activityCookie, task, item);
+      $.log(`${prefix}: apStartTaskTime 启动计时 => ${stringifySnippet(startResult, 800)}`);
+
+      if (Number(startResult?.code ?? -1) === 0) {
+        const waitMs = getBrowseWaitMs(task);
+        $.log(`${prefix}: 启动计时成功，等待 ${Math.ceil(waitMs / 1000)} 秒后完成限时任务`);
+        await sleep(waitMs);
+        const pollResult = await inviteFissionPoll(activityCookie);
+        $.log(`${prefix}: inviteFissionPoll 单次刷新 => ${stringifySnippet(pollResult, 800)}`);
+        const limitResult = await doLimitTimeTask(activityCookie);
+        $.log(`${prefix}: apDoLimitTimeTask 完成限时任务 => ${stringifySnippet(limitResult, 800)}`);
+        completedTaskIds.add(task.id);
+        continue;
+      }
+
       const doTaskResult = await doTask(activityCookie, task, item);
-      $.log(`${prefix}: apsDoTask 执行任务 => ${stringifySnippet(doTaskResult, 800)}`);
+      $.log(`${prefix}: apStartTaskTime 未成功，apsDoTask 备用执行 => ${stringifySnippet(doTaskResult, 800)}`);
       if (Number(doTaskResult?.code ?? -1) === 0) {
         completedTaskIds.add(task.id);
         if (doTaskResult?.data?.alreadyGranted || doTaskResult?.data?.finished) {
-          $.log(`${prefix}: apsDoTask 已完成并发放奖励`);
+          $.log(`${prefix}: apsDoTask 备用执行已完成并发放奖励`);
           continue;
         }
-        const waitMs = getBrowseWaitMs(task);
-        $.log(`${prefix}: apsDoTask 成功，等待 ${Math.ceil(waitMs / 1000)} 秒后领取任务奖励`);
-        await sleep(waitMs);
         const drawAwardResult = await drawTaskAward(activityCookie, task);
         $.log(`${prefix}: apTaskDrawAward 领取任务奖励 => ${stringifySnippet(drawAwardResult, 800)}`);
       } else if (Number(doTaskResult?.code ?? -1) === 2005) {
         completedTaskIds.add(task.id);
       }
-      continue;
-    }
-
-    const startResult = await startTaskTime(activityCookie, task, item);
-    $.log(`${prefix}: apStartTaskTime 启动计时 => ${stringifySnippet(startResult, 800)}`);
-
-    if (Number(startResult?.code ?? -1) === 0) {
-      const waitMs = getBrowseWaitMs(task);
-      $.log(`${prefix}: 启动计时成功，等待 ${Math.ceil(waitMs / 1000)} 秒后完成限时任务`);
-      await sleep(waitMs);
-      const pollResult = await inviteFissionPoll(activityCookie);
-      $.log(`${prefix}: inviteFissionPoll 单次刷新 => ${stringifySnippet(pollResult, 800)}`);
-      const limitResult = await doLimitTimeTask(activityCookie);
-      $.log(`${prefix}: apDoLimitTimeTask 完成限时任务 => ${stringifySnippet(limitResult, 800)}`);
-      completedTaskIds.add(task.id);
-      continue;
-    }
-
-    const doTaskResult = await doTask(activityCookie, task, item);
-    $.log(`${prefix}: apStartTaskTime 未成功，apsDoTask 备用执行 => ${stringifySnippet(doTaskResult, 800)}`);
-    if (Number(doTaskResult?.code ?? -1) === 0) {
-      completedTaskIds.add(task.id);
-      if (doTaskResult?.data?.alreadyGranted || doTaskResult?.data?.finished) {
-        $.log(`${prefix}: apsDoTask 备用执行已完成并发放奖励`);
-        continue;
-      }
-      const drawAwardResult = await drawTaskAward(activityCookie, task);
-      $.log(`${prefix}: apTaskDrawAward 领取任务奖励 => ${stringifySnippet(drawAwardResult, 800)}`);
-    } else if (Number(doTaskResult?.code ?? -1) === 2005) {
-      completedTaskIds.add(task.id);
+    } catch (error) {
+      $.log(`${prefix}: 当前任务异常，跳过继续下一个 => ${summarizeTask(task, item)}，错误=${error.message || error}`);
     }
   }
 
