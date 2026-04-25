@@ -1,6 +1,6 @@
 /*
-TODO 领券中心， 二次从首页进入抽奖， 还未调通
-17 0 * * * jd_coupon_activity_bean.js
+//TODO 领券中心， 二次从首页进入抽奖， 还未调通
+//17 0 * * * jd_coupon_activity_bean.js
 
 环境变量说明：
 1. JD_COUPON_ACTIVITY_EID_TOKEN
@@ -55,7 +55,7 @@ const {
   stringifySnippet,
 } = require('./function/jdHarBeanCommon.js');
 
-const $ = new Env('频道活动浏览领京豆');
+const $ = new Env('领券中心首页浏览领京豆');
 
 let notify = null;
 try {
