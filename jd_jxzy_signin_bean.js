@@ -1,5 +1,6 @@
 /*
 cron:11 0 * * * jd_jxzy_signin_bean.js
+TODO： 京喜自营签到已ok， 返回 从首页重新进入，领取京豆未调通
 
 环境变量说明：
 1. JD_JXZY_EID_TOKEN

@@ -93,7 +93,7 @@ const DEFAULT_OS_VERSION = '26.2';
 const DEFAULT_PARTNER = '-1';
 const DEFAULT_AREA = '18_1482_48938_54602';
 const DEFAULT_BROWSE_WAIT_MS = 10 * 1000;
-const DEFAULT_DRAW_INTERVAL_MS = 3000;
+const DEFAULT_DRAW_INTERVAL_MS = 4000;
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
 

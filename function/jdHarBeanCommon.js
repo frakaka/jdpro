@@ -89,10 +89,15 @@ function stringifyCookieMap(cookieMap) {
 
 function mergeCookieString(baseCookie, extraCookieValues) {
   const cookieMap = parseCookieString(baseCookie);
-  for (const [key, value] of Object.entries(extraCookieValues || {})) {
-    if (value) {
-      cookieMap.set(key, value);
+  const extraCookieMap = typeof extraCookieValues === 'string'
+    ? parseCookieString(extraCookieValues)
+    : new Map(Object.entries(extraCookieValues || {}));
+
+  for (const [key, value] of extraCookieMap.entries()) {
+    if (!key || !value) {
+      continue;
     }
+    cookieMap.set(key, value);
   }
   return stringifyCookieMap(cookieMap);
 }
@@ -357,9 +362,10 @@ async function getJsSecuritySigner(options = {}) {
     cookie = '',
     pageUrl = 'https://laputa.jd.com/',
     scriptUrl = DEFAULT_JS_SECURITY_SCRIPT_URL,
+    bizId = 'laputa',
     userAgent = DEFAULT_JR_USER_AGENT,
   } = options;
-  const cacheKey = `${h5stAppId}:${pageUrl}:${userAgent}:${getUserName(cookie)}`;
+  const cacheKey = `${h5stAppId}:${pageUrl}:${scriptUrl}:${bizId}:${userAgent}:${getUserName(cookie)}`;
 
   if (jsSecuritySignerCache.has(cacheKey)) {
     return jsSecuritySignerCache.get(cacheKey);
@@ -379,7 +385,7 @@ async function getJsSecuritySigner(options = {}) {
     });
 
     const { window } = dom;
-    patchRiskWindow(window, { bizId: 'laputa', userAgent });
+    patchRiskWindow(window, { bizId, userAgent });
     window.XMLHttpRequest = createNodeXmlHttpRequest(window, { cookie, userAgent });
     window.eval(scriptSource);
 
@@ -730,6 +736,7 @@ async function postFormApi(cookie, options) {
     h5stMode = 'h5st41',
     h5stVersion = '5.3',
     h5stScriptUrl = DEFAULT_JS_SECURITY_SCRIPT_URL,
+    h5stBizId = 'laputa',
     h5stSignKeys = [],
     userAgent = getUserAgent(),
     origin,
@@ -775,6 +782,7 @@ async function postFormApi(cookie, options) {
         userAgent,
         pageUrl: h5stPageUrl,
         scriptUrl: h5stScriptUrl,
+        bizId: h5stBizId,
       })
       : await createH5st({
         functionId,
@@ -789,7 +797,10 @@ async function postFormApi(cookie, options) {
     appendFormValue(form, 'h5st', h5st);
   }
 
-  const response = await got.post(`${endpoint}?functionId=${encodeURIComponent(functionId)}`, {
+  const requestUrl = new URL(endpoint);
+  requestUrl.searchParams.set('functionId', functionId);
+
+  const response = await got.post(requestUrl.toString(), {
     body: form.toString(),
     headers: buildHeaders(cookie, { origin, referer, userAgent, extraHeaders }),
     throwHttpErrors: false,
