@@ -1,5 +1,5 @@
 /*
-cron:27 0 * * * jdjr_tiantian_zhuan_dou.js
+cron:27 0 * * * jd_jr_tiantian_zhuan_dou.js
 
 环境变量说明：
 1. JDJR_TIANTIAN_ZHUAN_DOU_DEBUG
