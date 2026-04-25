@@ -1,5 +1,5 @@
 /*
-cron:27 0 * * * jd_jr_tiantian_zhuan_dou.js
+cron:27 10 * * * jd_jr_old_tiantian_zhuan_dou.js
 
 环境变量说明：
 1. JDJR_TIANTIAN_ZHUAN_DOU_DEBUG
@@ -14,7 +14,11 @@ cron:27 0 * * * jd_jr_tiantian_zhuan_dou.js
    含义：里程碑领奖接口的 token、channelCode、milePostId。
    是否必须：否，默认分别为 TVBaZRYGYS / CH202501131 / 115。
 
-4. JDJR_TIANTIAN_ZHUAN_DOU_FULL_COOKIE
+4. JDJR_TIANTIAN_ZHUAN_DOU_CHANNELS
+   含义：需要扫描的 mission 渠道，多个值用英文逗号分隔。
+   是否必须：否，默认 CH202501151,CH202601152。
+
+5. JDJR_TIANTIAN_ZHUAN_DOU_FULL_COOKIE
    含义：天天赚豆活动页完整 Cookie，优先用于 mission 相关接口，补齐 sdtoken、qid、sgm 等页面态。
    是否必须：否，默认使用 JD_COOKIE 与 gias 动态补齐后的 Cookie。
 */
@@ -36,7 +40,7 @@ const {
   stringifySnippet,
 } = require('./function/jdHarBeanCommon');
 
-const $ = new Env('京东金融天天赚豆');
+const $ = new Env('金融old天天赚豆');
 
 const USER_AGENT = DEFAULT_JR_USER_AGENT;
 const AAR2_URL = 'https://jrsecstatic.jdpay.com/jr-sec-dev-static/aar2-2.1.0.min.js';
@@ -48,10 +52,9 @@ const DAILY_PAGE_URL = 'https://fu.jr.jd.com/fq-free-channel/redenvelope/index.h
 const DAILY_PAGE_ORIGIN = 'https://fu.jr.jd.com';
 const DAILY_REWARD_URL = 'https://ms.jr.jd.com/gw2/generic/dailyR/h5/m/fetchUserDailyRewardV2';
 
-const SHOW_PAGE_URL = 'https://show.jd.com/m/RkO0AE9rKrYy6ZDd/?pageKey=RkO0AE9rKrYy6ZDd&channel=01172&jrcontainer=h5&jrlogin=true';
+const SHOW_PAGE_URL = 'https://show.jd.com/m/RkO0AE9rKrYy6ZDd/?pageKey=RkO0AE9rKrYy6ZDd&channel=01174';
 const SHOW_PAGE_ORIGIN = 'https://show.jd.com';
-const SHOW_PAGE_BUILD_DATA_URL = 'https://ms.jr.jd.com/gw/generic/aladdin/h5/m/buildVisualizeData';
-const SHOW_PAGE_KEY = 'RkO0AE9rKrYy6ZDd';
+const MISSION_QUERY_URL = 'https://ms.jr.jd.com/gw/generic/mission/h5/m/queryMission';
 const MISSION_RECEIVE_URL = 'https://ms.jr.jd.com/gw/generic/mission/h5/m/receiveMission';
 const MISSION_DETAIL_URL = 'https://ms.jr.jd.com/gw2/generic/mission/h5/m/queryMissionDetail';
 const MISSION_EXTERNAL_CONFIG_URL = 'https://ms.jr.jd.com/gw2/generic/Mission/h5/m/externalconfig';
@@ -64,10 +67,15 @@ const DEFAULT_SDK_TOKEN = 'jdd01EYPTDC4JJOP4V6G54UFBKTIV7JHWK2GV7ILVE3BACLTOY3GJ
 const DEFAULT_MILEPOST_TOKEN = 'TVBaZRYGYS';
 const DEFAULT_MILEPOST_CHANNEL = 'CH202501131';
 const DEFAULT_MILEPOST_ID = 115;
+const DEFAULT_CHANNEL_LIST = ['CH202501151', 'CH202601152'];
+const DEFAULT_AKS_SIGN_ID = '6e4bE8gg4d';
 const MISSION_WAIT_MS = 10000;
 const CHANGEFLOWAPP_DETAIL_RETRY_WAIT_MS = 8000;
 const CHANGEFLOWAPP_DETAIL_QUERY_COUNT = 2;
+const MISSION_WAAP_APP_KEY = '88fb2c01-3011-4bd7-b548-4d5466c43aeb';
 const MISSION_SGM_PID = '9HwAEg@vlKkp7SqT8dSSBaj';
+const MISSION_XRP_CLIENT = 'h5_1.0.0';
+const DAILY_INDEX_PAGE_URL = 'https://fu.jr.jd.com/fq-free-channel/redenvelope/index.html';
 
 const DEFAULT_DETAIL_DEVICE_INFO = {
   channelInfo: 'appstore',
@@ -95,14 +103,20 @@ const CHANNEL_CONFIG_MAP = {
     pageType: 'show',
     signMode: 'pin',
   },
-  CH202501131: {
-    channelCode: 'CH202501131',
-    queryStyle: 'json',
-    origin: SHOW_PAGE_ORIGIN,
-    referer: SHOW_PAGE_URL,
-    cookieEnvKey: 'JDJR_TIANTIAN_ZHUAN_DOU_SHOW_FULL_COOKIE',
-    pageType: 'show',
-    signMode: 'pin',
+  CH202601152: {
+    channelCode: 'CH202601152',
+    queryStyle: 'form',
+    origin: DAILY_PAGE_ORIGIN,
+    referer: `${DAILY_PAGE_ORIGIN}/`,
+    env: 'JRAPP',
+    systemEnv: 'IOS',
+    jrAppVersion: '8.1.70',
+    errorCode: '00000',
+    type: '100',
+    aksSignId: DEFAULT_AKS_SIGN_ID,
+    cookieEnvKey: 'JDJR_TIANTIAN_ZHUAN_DOU_DAILY_FULL_COOKIE',
+    pageType: 'daily',
+    signMode: 'aks',
   },
 };
 
@@ -157,8 +171,20 @@ function buildShowMissionHeaders() {
   };
 }
 
+function buildDailyMissionHeaders() {
+  return {
+    'waap-appkey': MISSION_WAAP_APP_KEY,
+    'x-rp-client': MISSION_XRP_CLIENT,
+    'x-referer-page': DAILY_INDEX_PAGE_URL,
+    'Sec-Fetch-Site': 'same-site',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
+    Priority: 'u=3, i',
+  };
+}
+
 function buildMissionHeaders(config) {
-  return buildShowMissionHeaders();
+  return config?.pageType === 'daily' ? buildDailyMissionHeaders() : buildShowMissionHeaders();
 }
 
 function getMissionPin(cookie) {
@@ -497,24 +523,6 @@ async function getJson(url, cookie, options = {}) {
   return response.body ? safeJsonParse(response.body, response.body) : {};
 }
 
-async function getText(url, cookie, options = {}) {
-  const response = await got.get(url, {
-    headers: buildHeaders(cookie, {
-      origin: options.origin,
-      referer: options.referer,
-      userAgent: USER_AGENT,
-      contentType: '',
-      extraHeaders: options.extraHeaders || {},
-    }),
-    throwHttpErrors: false,
-    timeout: {
-      request: REQUEST_TIMEOUT_MS,
-    },
-  });
-
-  return response.body || '';
-}
-
 function buildRewardSummary(awards) {
   if (!Array.isArray(awards) || !awards.length) {
     return '未知奖励';
@@ -554,147 +562,6 @@ async function queryDailyRewardStatus(cookie, riskContext) {
   });
 }
 
-async function queryShowPageBuildData(cookie, showPageUrl) {
-  return postForm(SHOW_PAGE_BUILD_DATA_URL, cookie, {
-    form: {
-      reqData: JSON.stringify({
-        pageIdStr: SHOW_PAGE_KEY,
-        buildCodes: ['common'],
-        engineType: 1,
-      }),
-    },
-    origin: SHOW_PAGE_ORIGIN,
-    referer: showPageUrl,
-  });
-}
-
-function collectTaskCfgList(source, result = []) {
-  if (Array.isArray(source)) {
-    for (const item of source) {
-      collectTaskCfgList(item, result);
-    }
-    return result;
-  }
-
-  if (!source || typeof source !== 'object') {
-    return result;
-  }
-
-  const taskCfg = source?.data?.contentModel?.taskCfg;
-  if (taskCfg) {
-    result.push(typeof taskCfg === 'string' ? safeJsonParse(taskCfg, {}) : taskCfg);
-  }
-
-  for (const value of Object.values(source)) {
-    collectTaskCfgList(value, result);
-  }
-
-  return result;
-}
-
-async function resolveShowPageTaskConfig(cookie, prefix) {
-  const response = await queryShowPageBuildData(cookie, SHOW_PAGE_URL);
-  const taskCfgList = collectTaskCfgList(response?.resultData?.data || {});
-  const targetTaskCfg = taskCfgList.find((item) => item?.channelCode && Array.isArray(item?.missionList))
-    || taskCfgList[0]
-    || null;
-
-  if (!targetTaskCfg) {
-    $.log(`${prefix}: show页 taskCfg => 未找到`);
-    return null;
-  }
-
-  const unifyIds = (targetTaskCfg.missionList || [])
-    .map((item) => Number(item?.unifyId || 0))
-    .filter((item) => item > 0);
-  $.log(`${prefix}: show页 taskCfg => channelCode=${targetTaskCfg.channelCode || '-'} unifyIds=${unifyIds.join(',') || '-'}`);
-
-  return {
-    channelCode: targetTaskCfg.channelCode || DEFAULT_MILEPOST_CHANNEL,
-    unifyIds,
-    raw: targetTaskCfg,
-    showPageUrl: SHOW_PAGE_URL,
-  };
-}
-
-function resolveDynamicMissionChannelCodes(showPageTaskConfigs) {
-  const channelCodes = [];
-  const configList = Array.isArray(showPageTaskConfigs) ? showPageTaskConfigs : [showPageTaskConfigs].filter(Boolean);
-
-  for (const showPageTaskConfig of configList) {
-    const missionList = showPageTaskConfig?.raw?.missionList || [];
-    for (const item of missionList) {
-      const channelCode =
-        item?.channelCode ||
-        item?.channelPublishCode ||
-        item?.channelCodeValue ||
-        '';
-      if (!channelCode || channelCode === showPageTaskConfig?.channelCode) {
-        continue;
-      }
-      channelCodes.push(channelCode);
-    }
-  }
-
-  return [...new Set(channelCodes)];
-}
-
-function createDailyChannelConfig(channelCode) {
-  return {
-    channelCode,
-    queryStyle: 'form',
-    origin: DAILY_PAGE_ORIGIN,
-    referer: `${DAILY_PAGE_ORIGIN}/`,
-    env: 'JRAPP',
-    systemEnv: 'IOS',
-    jrAppVersion: '8.1.70',
-    errorCode: '00000',
-    type: '100',
-    aksSignId: DEFAULT_AKS_SIGN_ID,
-    cookieEnvKey: 'JDJR_TIANTIAN_ZHUAN_DOU_DAILY_FULL_COOKIE',
-    pageType: 'daily',
-    signMode: 'aks',
-  };
-}
-
-function resolveChannelConfig(channelCode) {
-  return CHANNEL_CONFIG_MAP[channelCode] || createDailyChannelConfig(channelCode);
-}
-
-function extractMissionChannelCode(mission) {
-  if (!mission || typeof mission !== 'object') {
-    return '';
-  }
-
-  const directChannelCode =
-    mission.channelCode ||
-    mission.channelPublishCode ||
-    mission.taskChannelId ||
-    mission.channel ||
-    '';
-  if (/^CH\d+$/.test(String(directChannelCode))) {
-    return String(directChannelCode);
-  }
-
-  const linkList = [mission.doLink, mission.doLinkFinish, mission.h5Url];
-  for (const link of linkList) {
-    if (!link || typeof link !== 'string') {
-      continue;
-    }
-
-    try {
-      const urlObject = new URL(link);
-      const channelCode = urlObject.searchParams.get('channelCode') || '';
-      if (/^CH\d+$/.test(channelCode)) {
-        return channelCode;
-      }
-    } catch (error) {
-    }
-  }
-
-  return '';
-}
-
 function buildMilepostRequest(cookie, riskContext, extra = {}) {
   return {
     source: 'mdH5Pagedeploy',
@@ -705,16 +572,12 @@ function buildMilepostRequest(cookie, riskContext, extra = {}) {
   };
 }
 
-async function queryMilePost(cookie, riskContext, milepostConfig = {}) {
-  const unifyIds = Array.isArray(milepostConfig.unifyIds) && milepostConfig.unifyIds.length
-    ? milepostConfig.unifyIds
-    : [Number(process.env.JDJR_TIANTIAN_ZHUAN_DOU_MILEPOST_ID || DEFAULT_MILEPOST_ID)];
+async function queryMilePost(cookie, riskContext) {
   return postForm(MILEPOST_QUERY_URL, cookie, {
     form: {
       reqData: JSON.stringify(
         buildMilepostRequest(cookie, riskContext, {
-          channelCode: milepostConfig.channelCode || process.env.JDJR_TIANTIAN_ZHUAN_DOU_MILEPOST_CHANNEL || DEFAULT_MILEPOST_CHANNEL,
-          milePostIdList: unifyIds,
+          milePostIdList: [Number(process.env.JDJR_TIANTIAN_ZHUAN_DOU_MILEPOST_ID || DEFAULT_MILEPOST_ID)],
           systemEnv: 'IOS',
           queryMissionFlag: 2,
           schemaList: ['dianping://', 'freereader://', 'sinaweibo://browser', 'imeituan://', 'cn.10086.app://', 'iting://', 'kwai://'],
@@ -728,23 +591,101 @@ async function queryMilePost(cookie, riskContext, milepostConfig = {}) {
       ),
     },
     origin: SHOW_PAGE_ORIGIN,
-    referer: milepostConfig.showPageUrl || SHOW_PAGE_URL,
+    referer: SHOW_PAGE_URL,
   });
 }
 
-async function awardMilePostNode(cookie, riskContext, number, milepostConfig = {}) {
+async function awardMilePostNode(cookie, riskContext, number) {
   return postForm(MILEPOST_AWARD_URL, cookie, {
     form: {
       reqData: JSON.stringify(
         buildMilepostRequest(cookie, riskContext, {
-          channelCode: milepostConfig.channelCode || process.env.JDJR_TIANTIAN_ZHUAN_DOU_MILEPOST_CHANNEL || DEFAULT_MILEPOST_CHANNEL,
-          milePostId: Number(milepostConfig.unifyIds?.[0] || process.env.JDJR_TIANTIAN_ZHUAN_DOU_MILEPOST_ID || DEFAULT_MILEPOST_ID),
+          milePostId: Number(process.env.JDJR_TIANTIAN_ZHUAN_DOU_MILEPOST_ID || DEFAULT_MILEPOST_ID),
           number,
         }),
       ),
     },
     origin: SHOW_PAGE_ORIGIN,
-    referer: milepostConfig.showPageUrl || SHOW_PAGE_URL,
+    referer: SHOW_PAGE_URL,
+  });
+}
+
+function getChannelConfigs() {
+  const channels = String(process.env.JDJR_TIANTIAN_ZHUAN_DOU_CHANNELS || DEFAULT_CHANNEL_LIST.join(','))
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return channels
+    .map((channelCode) => CHANNEL_CONFIG_MAP[channelCode])
+    .filter(Boolean);
+}
+
+function buildLegacyMissionQueryPayload(cookie, riskContext, config, missionIds) {
+  const signPayload = {
+    channelCode: config.channelCode,
+    PIN: getMissionPin(cookie),
+  };
+  const signText = JSON.stringify(signPayload);
+  const { nonce, signature } = signWithAar2(riskContext, signText);
+  const payload = {
+    channelCode: config.channelCode,
+    missionIds,
+    deviceInfo: {
+      ...buildMissionDeviceInfo(cookie, riskContext),
+      os: 'ios',
+    },
+    nonce,
+    signature,
+  };
+  return { reqData: payload };
+}
+
+function buildFeedMissionQueryPayload(riskContext, config) {
+  const aksSignId = generateAksSignId();
+  const signPayload = {
+    channelCode: config.channelCode,
+    aksSignId,
+  };
+  const signText = JSON.stringify(signPayload);
+  const { nonce, signature } = signWithAar2(riskContext, signText);
+  const payload = {
+    channelCode: config.channelCode,
+    env: config.env,
+    systemEnv: config.systemEnv,
+    jrAppVersion: config.jrAppVersion,
+    errorCode: config.errorCode,
+    type: config.type,
+    aksSignId,
+    nonce,
+    signature: String(signature || '').toUpperCase(),
+  };
+  return { reqData: payload };
+}
+
+async function queryMissionList(cookie, riskContext, config, missionIds = config.missionIds) {
+  const missionCookie = buildMissionCookie(cookie, config);
+  const missionHeaders = buildMissionHeaders(config);
+  if (config.queryStyle === 'json') {
+    const payload = buildLegacyMissionQueryPayload(cookie, riskContext, config, missionIds);
+    return postBody(MISSION_QUERY_URL, missionCookie, {
+      body: payload,
+      origin: config.origin,
+      referer: config.referer,
+      contentType: 'application/json;charset=utf-8',
+      extraHeaders: missionHeaders,
+    });
+  }
+
+  const payload = buildFeedMissionQueryPayload(riskContext, config);
+  return postForm(MISSION_QUERY_URL, missionCookie, {
+    form: {
+      reqData: JSON.stringify(payload.reqData),
+    },
+    origin: config.origin,
+    referer: config.referer,
+    contentType: 'application/x-www-form-urlencoded',
+    extraHeaders: missionHeaders,
   });
 }
 
@@ -1012,7 +953,7 @@ function buildMissionExternalConfigPayload(riskContext, mission) {
 }
 
 async function queryMissionExternalConfig(cookie, riskContext, mission) {
-  const config = resolveChannelConfig(mission.channelCode);
+  const config = CHANNEL_CONFIG_MAP[mission.channelCode] || {};
   const missionCookie = buildMissionCookie(cookie, config);
   const payload = buildMissionExternalConfigPayload(riskContext, mission);
   const params = new URLSearchParams(payload);
@@ -1026,7 +967,7 @@ async function queryMissionExternalConfig(cookie, riskContext, mission) {
 async function queryMissionDetail(cookie, riskContext, mission) {
   const payload = buildMissionDetailPayload(cookie, riskContext, mission);
   const reqData = encodeURIComponent(JSON.stringify(payload));
-  const config = resolveChannelConfig(mission.channelCode);
+  const config = CHANNEL_CONFIG_MAP[mission.channelCode] || {};
   const missionCookie = buildMissionCookie(cookie, config);
   return getJson(`${MISSION_DETAIL_URL}?reqData=${reqData}`, missionCookie, {
     origin: new URL(mission.doLink).origin,
@@ -1059,19 +1000,8 @@ async function verifyMission(cookie, riskContext, config, mission) {
     return lastResponse;
   }
 
-  if (mission?.milepostConfig) {
-    const verifyResponse = await queryMilePost(cookie, riskContext, mission.milepostConfig);
-    const milePostList = Array.isArray(verifyResponse?.resultData?.data) ? verifyResponse.resultData.data : [];
-    const missionList = milePostList.flatMap((item) => Array.isArray(item?.missionList) ? item.missionList : []);
-    const verifiedMission = findMissionById(missionList, mission.missionId) || {};
-    return {
-      resultData: {
-        data: milePostList,
-        mission: verifiedMission,
-      },
-    };
-  }
-  return {};
+  const missionIds = config.queryStyle === 'json' ? [mission.missionId] : config.missionIds;
+  return queryMissionList(cookie, riskContext, config, missionIds);
 }
 
 async function handleDailyReward(cookie, riskContext, prefix) {
@@ -1084,12 +1014,10 @@ async function handleDailyReward(cookie, riskContext, prefix) {
   if (isDebugEnabled()) {
     $.log(`${prefix}: fetchUserDailyRewardV2 原始返回 => ${stringifySnippet(response, 1200)}`);
   }
-
-  return data;
 }
 
-async function handleMilePost(cookie, riskContext, prefix, milepostConfig) {
-  const response = await queryMilePost(cookie, riskContext, milepostConfig);
+async function handleMilePost(cookie, riskContext, prefix) {
+  const response = await queryMilePost(cookie, riskContext);
   const milePostList = Array.isArray(response?.resultData?.data) ? response.resultData.data : [];
   const progressSummary = milePostList
     .map((item) => {
@@ -1112,42 +1040,34 @@ async function handleMilePost(cookie, riskContext, prefix, milepostConfig) {
   $.log(`${prefix}: 里程碑进度 => ${progressSummary || '空'}`);
   $.log(`${prefix}: 可领奖里程碑节点数 => ${claimableNodes.length}`);
   for (const node of claimableNodes) {
-    const awardResponse = await awardMilePostNode(cookie, riskContext, node.number, milepostConfig);
+    const awardResponse = await awardMilePostNode(cookie, riskContext, node.number);
     const awardList = awardResponse?.resultData?.data?.nodeAwardInfoList || [];
     $.log(`${prefix}: 领取里程碑${node.number} => ${buildRewardSummary(awardList)}`);
     if (isDebugEnabled()) {
       $.log(`${prefix}: awardMilePostNode 原始返回 => ${stringifySnippet(awardResponse, 1200)}`);
     }
   }
-
-  const missions = milePostList.flatMap((item) => {
-    const missionList = Array.isArray(item?.missionList) ? item.missionList : [];
-    return missionList.map((mission) => ({
-      ...mission,
-      channelCode: extractMissionChannelCode(mission) || mission.channelCode || milepostConfig.channelCode || DEFAULT_MILEPOST_CHANNEL,
-      milepostConfig,
-    }));
-  });
-
-  return missions;
 }
 
 function filterBeanMissions(list, channelCode) {
   return list
     .filter((item) => hasBeanReward(item.awards))
-    .filter((item) => !isChangeflowappLink(item.doLink))
     .map((item) => ({
       ...item,
-      channelCode: item.channelCode || channelCode,
+      channelCode,
     }));
 }
 
-async function handleMissionList(cookie, riskContext, missions, prefix) {
-  const firstList = filterBeanMissions(missions, DEFAULT_MILEPOST_CHANNEL);
-  $.log(`${prefix}: queryMilePost 京豆任务数 => ${firstList.length}`);
+async function handleMissionChannel(cookie, riskContext, config, prefix) {
+  const firstResponse = await queryMissionList(cookie, riskContext, config);
+  const firstList = filterBeanMissions(extractMissionList(firstResponse), config.channelCode);
+
+  $.log(`${prefix}: ${config.channelCode} 京豆任务数 => ${firstList.length}`);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: ${config.channelCode} queryMission 原始返回 => ${stringifySnippet(firstResponse, 1500)}`);
+  }
 
   for (const mission of firstList) {
-    const config = resolveChannelConfig(mission.channelCode);
     if (Number(mission.status) === 2) {
       $.log(`${prefix}: 跳过已完成任务 => ${mission.name} | ${buildRewardSummary(mission.awards)}`);
       continue;
@@ -1176,10 +1096,7 @@ async function handleMissionList(cookie, riskContext, missions, prefix) {
         `${prefix}: 任务复查 => ${mission.name} status=${detail.status ?? '-'} finishNum=${detail.finishNum ?? '-'} award=${buildRewardSummary(detail.awards)}`,
       );
     } else {
-      const verifiedMission =
-        verifyResponse?.resultData?.mission ||
-        findMissionById(extractMissionList(verifyResponse), mission.missionId) ||
-        {};
+      const verifiedMission = findMissionById(extractMissionList(verifyResponse), mission.missionId) || {};
       $.log(
         `${prefix}: 任务复查 => ${mission.name} status=${verifiedMission.status ?? '-'} finishNum=${verifiedMission.finishNum ?? '-'} award=${buildRewardSummary(verifiedMission.awards || mission.awards)}`,
       );
@@ -1199,16 +1116,13 @@ async function runAccount(index, cookie) {
   try {
     $.log(`\n==== ${prefix} ====`);
     riskContext = await createRiskContext(cookie);
-    const showPageTaskConfig = await resolveShowPageTaskConfig(riskContext.cookie, prefix);
     await handleDailyReward(riskContext.cookie, riskContext, prefix);
-    const milePostMissions = await handleMilePost(riskContext.cookie, riskContext, prefix, showPageTaskConfig || {});
-    const missionChannels = [...new Set((milePostMissions || []).map((item) => item.channelCode).filter(Boolean))];
-    if (missionChannels.length) {
-      $.log(`${prefix}: queryMilePost 任务渠道 => ${missionChannels.join(',')}`);
-    } else {
-      $.log(`${prefix}: queryMilePost 任务渠道 => 未下发`);
+    await handleMilePost(riskContext.cookie, riskContext, prefix);
+
+    const channelConfigs = getChannelConfigs();
+    for (const config of channelConfigs) {
+      await handleMissionChannel(riskContext.cookie, riskContext, config, prefix);
     }
-    await handleMissionList(riskContext.cookie, riskContext, milePostMissions || [], prefix);
   } catch (error) {
     $.log(`${prefix}: 执行异常 => ${error.message || error}`);
   } finally {
