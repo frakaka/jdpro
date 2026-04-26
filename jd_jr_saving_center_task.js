@@ -75,6 +75,14 @@ const RELEASE_DATA_URL = 'https://ms.jr.jd.com/gw/generic/app/newna/m/getRelease
 const DEFAULT_FP = '7c797211f76355031663f6372ab27c12';
 const DEFAULT_SDK_TOKEN = 'jdd01EYPTDC4JJOP4V6G54UFBKTIV7JHWK2GV7ILVE3BACLTOY3GJXDTR3ZWCCTQPGWW47ADZVEHYN2NGIV3TX33GDJO34RQARXG3XLG2TUQ01234567';
 const TEMPLATE_CHOICES = ['YXYZ', 'QY', 'SQSP'];
+const SAVING_CENTER_SCHEMA_LIST = [
+  'sinaweibo://',
+  'imeituan://',
+  'freereader://',
+  'cn.10086.app://',
+  'dianping://',
+  'kwai://',
+];
 
 let jsdomDeps = null;
 let aar2ScriptPromise = null;
@@ -617,10 +625,11 @@ async function encryptBusinessData(data) {
   const [cryptico, publicKey] = await Promise.all([getCrypticoApi(), getRsaPublicKey()]);
   cryptico.setPublicKeyString(JSON.stringify(publicKey));
   const encrypted = cryptico.encryptData(JSON.stringify(data));
-  if (!encrypted?.status || !encrypted.ciphertext) {
+  const cipherText = encrypted?.ciphertext || encrypted?.cipher || '';
+  if (!encrypted?.status || !cipherText) {
     throw new Error(`京东金融 bodyEncrypt 生成失败: ${JSON.stringify(encrypted)}`);
   }
-  return encrypted.ciphertext;
+  return cipherText;
 }
 
 async function postForm(url, cookie, options = {}) {
@@ -720,7 +729,7 @@ async function getTaskPageInfo(cookie, riskContext) {
       clientEnv: '2',
       jumpSource: '001',
       abTest: '',
-      schemaList: ['didapinche://', 'yylive://', 'sjwb://browser', 'snssdk141://', 'wkbrowser://'],
+      schemaList: SAVING_CENTER_SCHEMA_LIST,
       platformFlag: '2',
       sourceVersion: '62',
       reqSource: '0',
@@ -741,6 +750,75 @@ async function getTaskPageInfo(cookie, riskContext) {
 
 function extractTaskItems(pageData) {
   const items = [];
+  const seenTaskKeys = new Set();
+
+  function pushTaskNode(node) {
+    if (!node || typeof node !== 'object' || !node.missionId) {
+      return;
+    }
+
+    const taskKey = `${node.missionId}_${node.channelCode || ''}_${node.title?.text || ''}`;
+    if (seenTaskKeys.has(taskKey)) {
+      return;
+    }
+
+    seenTaskKeys.add(taskKey);
+    items.push(node);
+  }
+
+  function isTaskNode(node) {
+    if (!node || typeof node !== 'object') {
+      return false;
+    }
+
+    const missionId = node.missionId;
+    const title = node.title?.text || '';
+    const subTitle = node.subTitle?.text || '';
+    const buttonText = node.button?.text || '';
+    const jumpUrl = node.button?.jumpData?.jumpUrl || '';
+
+    return Boolean(
+      missionId
+      && (title || subTitle || buttonText || jumpUrl),
+    );
+  }
+
+  function collectFromKnownTaskLists(node) {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        collectFromKnownTaskLists(item);
+      }
+      return;
+    }
+
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(node.taskList)) {
+      for (const taskNode of node.taskList) {
+        if (isTaskNode(taskNode)) {
+          pushTaskNode(taskNode);
+        }
+      }
+    }
+
+    if (Array.isArray(node.resultList)) {
+      for (const resultItem of node.resultList) {
+        if (Array.isArray(resultItem?.templateData?.taskList)) {
+          for (const taskNode of resultItem.templateData.taskList) {
+            if (isTaskNode(taskNode)) {
+              pushTaskNode(taskNode);
+            }
+          }
+        }
+      }
+    }
+
+    for (const value of Object.values(node)) {
+      collectFromKnownTaskLists(value);
+    }
+  }
 
   function walk(node) {
     if (Array.isArray(node)) {
@@ -754,8 +832,8 @@ function extractTaskItems(pageData) {
       return;
     }
 
-    if (node.missionId && node.title?.text) {
-      items.push(node);
+    if (isTaskNode(node)) {
+      pushTaskNode(node);
     }
 
     for (const value of Object.values(node)) {
@@ -763,8 +841,48 @@ function extractTaskItems(pageData) {
     }
   }
 
+  collectFromKnownTaskLists(pageData);
   walk(pageData);
   return items;
+}
+
+function collectPotentialTaskNodes(pageData, limit = 12) {
+  const matches = [];
+
+  function walk(node, path) {
+    if (matches.length >= limit) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      node.forEach((item, index) => walk(item, `${path}[${index}]`));
+      return;
+    }
+
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+
+    const hasTaskHint = 'missionId' in node
+      || 'status' in node
+      || 'button' in node
+      || 'jumpData' in node
+      || 'jumpUrl' in node;
+
+    if (hasTaskHint) {
+      matches.push({
+        path,
+        node,
+      });
+    }
+
+    for (const [key, value] of Object.entries(node)) {
+      walk(value, path ? `${path}.${key}` : key);
+    }
+  }
+
+  walk(pageData, '');
+  return matches;
 }
 
 function extractBeanTasks(pageData) {
@@ -774,17 +892,9 @@ function extractBeanTasks(pageData) {
   for (const item of items) {
     const title = item.title?.text || '';
     const subTitle = item.subTitle?.text || '';
-    const awardText = item.awardNumber?.text || '';
+    const buttonText = item.button?.text || '';
+    const jumpUrl = item.button?.jumpData?.jumpUrl || '';
     const channelCode = item.channelCode || '';
-    const beanRelated = title.includes('京豆')
-      || subTitle.includes('京豆')
-      || awardText.includes('京豆')
-      || awardText.includes('+1')
-      || awardText.includes('+2');
-
-    if (!beanRelated) {
-      continue;
-    }
 
     const key = `${item.missionId}_${channelCode}`;
     if (!taskMap.has(key)) {
@@ -797,8 +907,8 @@ function extractBeanTasks(pageData) {
         topFlag: Boolean(item.topFlag),
         missionType: Number(item.missionType),
         receivingStatus: Number(item.receivingStatus),
-        jumpUrl: item.button?.jumpData?.jumpUrl || '',
-        buttonText: item.button?.text || '',
+        jumpUrl,
+        buttonText,
       });
     }
   }
@@ -821,6 +931,32 @@ function isBrowseTask(task) {
   const buttonText = String(task.buttonText || '');
   if (buttonText.includes('已完成') || buttonText.includes('已领取')) {
     return false;
+  }
+
+  const normalizedButtonText = buttonText.trim();
+  const looksLikeRunnableButton = !normalizedButtonText
+    || normalizedButtonText.includes('去完成')
+    || normalizedButtonText.includes('去领取')
+    || normalizedButtonText.includes('去浏览')
+    || normalizedButtonText.includes('去查看');
+
+  const looksLikeHttpLandingPage = /^https?:\/\//i.test(jumpUrl);
+  const isKnownNonBrowseScheme = /^(openapp|alipays|weixin|qq|taobao|tmall|jdjr):/i.test(jumpUrl);
+  const looksLikeBrowseLandingPage = looksLikeHttpLandingPage
+    && !isKnownNonBrowseScheme
+    && (
+      jumpUrl.includes('jumpmission-v2')
+      || jumpUrl.includes('readTime=10')
+      || jumpUrl.includes('show.jd.com/')
+      || jumpUrl.includes('member.jr.jd.com/')
+      || jumpUrl.includes('u.jr.jd.com/')
+      || jumpUrl.includes('pro.m.jd.com/')
+      || jumpUrl.includes('jdhm.jd.com/')
+      || jumpUrl.includes('jd.com/')
+    );
+
+  if (looksLikeBrowseLandingPage && looksLikeRunnableButton) {
+    return true;
   }
 
   return jumpUrl.includes('jumpmission-v2')
@@ -1532,6 +1668,8 @@ async function runAccount(cookie, index) {
 
     const beforePage = await getTaskPageInfo(requestCookie, riskContext);
     const beforeData = beforePage?.resultData || {};
+    const beforeItems = extractTaskItems(beforeData);
+    const potentialTaskNodes = collectPotentialTaskNodes(beforeData);
     const beforeRewardMessage = getRewardMessage(beforeData);
     const beanTasks = extractBeanTasks(beforeData);
     const directMissionId = process.env.JDJR_SAVING_CENTER_MISSION_ID || '';
@@ -1542,6 +1680,14 @@ async function runAccount(cookie, index) {
     const targetTasks = taskLimit > 0 ? browseTasks.slice(0, taskLimit) : browseTasks;
 
     console.log(`${accountLabel}: 京豆任务摘要 => ${summarizeBeanTasks(beanTasks)}`);
+    debugLog(accountLabel, '任务页一级键', Object.keys(beforeData || {}));
+    debugLog(accountLabel, 'extractTaskItems.count', beforeItems.length);
+    if (!beanTasks.length) {
+      debugLog(accountLabel, 'resultList.length', Array.isArray(beforeData?.resultList) ? beforeData.resultList.length : -1);
+      debugLog(accountLabel, 'resultList[0]', Array.isArray(beforeData?.resultList) ? beforeData.resultList[0] : null);
+      debugLog(accountLabel, 'potentialTaskNodePaths', potentialTaskNodes.map((item) => item.path));
+      debugLog(accountLabel, '任务页原始返回片段', beforeData);
+    }
     if (beforeRewardMessage) {
       console.log(`${accountLabel}: 当前奖励文案 => ${beforeRewardMessage}`);
     }

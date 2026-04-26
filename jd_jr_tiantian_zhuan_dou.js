@@ -85,16 +85,6 @@ const DEFAULT_DETAIL_DEVICE_INFO = {
 };
 
 const CHANNEL_CONFIG_MAP = {
-  CH202501151: {
-    channelCode: 'CH202501151',
-    queryStyle: 'json',
-    origin: SHOW_PAGE_ORIGIN,
-    referer: SHOW_PAGE_URL,
-    missionIds: [46018],
-    cookieEnvKey: 'JDJR_TIANTIAN_ZHUAN_DOU_SHOW_FULL_COOKIE',
-    pageType: 'show',
-    signMode: 'pin',
-  },
   CH202501131: {
     channelCode: 'CH202501131',
     queryStyle: 'json',
@@ -133,16 +123,6 @@ function buildMissionCookie(cookie, config) {
 
 function generateMissionTraceId() {
   return `${Date.now()}${String(Math.floor(Math.random() * 1e6)).padStart(6, '0')}`;
-}
-
-function generateAksSignId(length = 10) {
-  const alphabet = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  let result = '';
-  for (let index = 0; index < length; index += 1) {
-    const randomIndex = Math.floor(Math.random() * alphabet.length);
-    result += alphabet[randomIndex];
-  }
-  return result;
 }
 
 function buildShowMissionHeaders() {
@@ -497,24 +477,6 @@ async function getJson(url, cookie, options = {}) {
   return response.body ? safeJsonParse(response.body, response.body) : {};
 }
 
-async function getText(url, cookie, options = {}) {
-  const response = await got.get(url, {
-    headers: buildHeaders(cookie, {
-      origin: options.origin,
-      referer: options.referer,
-      userAgent: USER_AGENT,
-      contentType: '',
-      extraHeaders: options.extraHeaders || {},
-    }),
-    throwHttpErrors: false,
-    timeout: {
-      request: REQUEST_TIMEOUT_MS,
-    },
-  });
-
-  return response.body || '';
-}
-
 function buildRewardSummary(awards) {
   if (!Array.isArray(awards) || !awards.length) {
     return '未知奖励';
@@ -617,48 +579,8 @@ async function resolveShowPageTaskConfig(cookie, prefix) {
   };
 }
 
-function resolveDynamicMissionChannelCodes(showPageTaskConfigs) {
-  const channelCodes = [];
-  const configList = Array.isArray(showPageTaskConfigs) ? showPageTaskConfigs : [showPageTaskConfigs].filter(Boolean);
-
-  for (const showPageTaskConfig of configList) {
-    const missionList = showPageTaskConfig?.raw?.missionList || [];
-    for (const item of missionList) {
-      const channelCode =
-        item?.channelCode ||
-        item?.channelPublishCode ||
-        item?.channelCodeValue ||
-        '';
-      if (!channelCode || channelCode === showPageTaskConfig?.channelCode) {
-        continue;
-      }
-      channelCodes.push(channelCode);
-    }
-  }
-
-  return [...new Set(channelCodes)];
-}
-
-function createDailyChannelConfig(channelCode) {
-  return {
-    channelCode,
-    queryStyle: 'form',
-    origin: DAILY_PAGE_ORIGIN,
-    referer: `${DAILY_PAGE_ORIGIN}/`,
-    env: 'JRAPP',
-    systemEnv: 'IOS',
-    jrAppVersion: '8.1.70',
-    errorCode: '00000',
-    type: '100',
-    aksSignId: DEFAULT_AKS_SIGN_ID,
-    cookieEnvKey: 'JDJR_TIANTIAN_ZHUAN_DOU_DAILY_FULL_COOKIE',
-    pageType: 'daily',
-    signMode: 'aks',
-  };
-}
-
 function resolveChannelConfig(channelCode) {
-  return CHANNEL_CONFIG_MAP[channelCode] || createDailyChannelConfig(channelCode);
+  return CHANNEL_CONFIG_MAP[channelCode] || CHANNEL_CONFIG_MAP[DEFAULT_MILEPOST_CHANNEL];
 }
 
 function extractMissionChannelCode(mission) {
@@ -769,16 +691,6 @@ async function receiveMission(cookie, riskContext, config, missionId) {
       missionId,
     });
     ({ nonce, signature } = signWithAar2(riskContext, signText));
-  } else if (config.signMode === 'aks') {
-    const aksSignId = generateAksSignId();
-    signText = JSON.stringify({
-      channelCode: config.channelCode,
-      aksSignId,
-      missionId,
-    });
-    ({ nonce, signature } = signWithAar2(riskContext, signText));
-    payload.aksSignId = aksSignId;
-    signature = String(signature || '').toUpperCase();
   } else {
     signText = JSON.stringify(payload);
     ({ nonce, signature } = signWithAar2(riskContext, signText));

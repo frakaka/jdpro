@@ -6,6 +6,15 @@ cron:13 0 * * * jd_jr_interest_signin_bean.js
    含义：是否输出接口原始响应片段，便于排查风控或字段变化。
    是否必须：否，默认不输出。
    如何覆盖：在青龙新增同名环境变量，值设为 1 / true / yes 即可开启。
+
+HAR 对应说明：
+1. 当前脚本对应页面：
+   https://iu.jr.jd.com/insurance/channel/interest?showTab=1
+2. 当前 HAR 中已验证可稳定闭环的奖励 POST 只有签到链：
+   - queryActivity
+   - signUpAndTake
+3. 当前 HAR 未出现另一条已验证成功的“红包/超市卡领奖” POST 闭环，
+   buildVisualizeData / batchGetTransLink 主要用于下发页面配置和跳转链接。
 */
 
 'use strict';
@@ -31,7 +40,7 @@ try {
   sharedUa = '';
 }
 
-const PAGE_URL = 'https://iu.jr.jd.com/insurance/channel/interest';
+const PAGE_URL = 'https://iu.jr.jd.com/insurance/channel/interest?showTab=1';
 const PAGE_ORIGIN = 'https://iu.jr.jd.com';
 const BUILD_URL = 'https://ms.jr.jd.com/gw/generic/aladdin/h5/m/buildVisualizeData';
 const QUERY_URL = 'https://ms.jr.jd.com/gw2/generic/jractivity/h5/m/queryActivity';
@@ -570,7 +579,7 @@ async function doSign(floorConfig, riskContext) {
   const form = createReqForm({
     antiRushFlag: '1',
     domain: 'iu.jr.jd.com',
-    uri: '/insurance/channel/interest',
+    uri: '/insurance/channel/interest?showTab=1',
     nonce,
     signature: aar2.sign(JSON.stringify(signPayload), nonce),
     signData: JSON.stringify(signPayload),
