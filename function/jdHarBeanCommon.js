@@ -313,6 +313,7 @@ function createNodeXmlHttpRequest(window, options = {}) {
     async send(body) {
       try {
         const requestMethod = String(this.method || 'GET').toUpperCase();
+        const requestUrl = new URL(this.url, window.location.href).toString();
         const requestOptions = {
           method: requestMethod,
           headers: {
@@ -328,7 +329,7 @@ function createNodeXmlHttpRequest(window, options = {}) {
         if (!['GET', 'HEAD'].includes(requestMethod) && body) {
           requestOptions.body = body;
         }
-        const response = await got(this.url, {
+        const response = await got(requestUrl, {
           ...requestOptions,
         });
         this.status = response.statusCode;
@@ -356,6 +357,56 @@ function createNodeXmlHttpRequest(window, options = {}) {
   };
 }
 
+function createNodeFetch(window, options = {}) {
+  const {
+    cookie = '',
+    userAgent = DEFAULT_JR_USER_AGENT,
+  } = options;
+
+  return async function nodeFetch(input, init = {}) {
+    const requestUrl = new URL(
+      typeof input === 'string' ? input : input?.url || '',
+      window.location.href,
+    ).toString();
+    const requestMethod = String(init.method || 'GET').toUpperCase();
+    const headers = {
+      Cookie: cookie,
+      Origin: window.location.origin,
+      Referer: window.location.href,
+      'User-Agent': userAgent,
+      ...(init.headers || {}),
+    };
+    const response = await got(requestUrl, {
+      method: requestMethod,
+      headers,
+      body: init.body,
+      throwHttpErrors: false,
+      timeout: { request: REQUEST_TIMEOUT_MS },
+      responseType: 'buffer',
+    });
+    const responseBuffer = response.body || Buffer.alloc(0);
+    const responseText = responseBuffer.toString('utf8');
+
+    return {
+      ok: response.statusCode >= 200 && response.statusCode < 300,
+      status: response.statusCode,
+      statusText: String(response.statusCode),
+      url: requestUrl,
+      headers: {
+        get(name) {
+          return response.headers[String(name || '').toLowerCase()] || null;
+        },
+      },
+      text: async () => responseText,
+      json: async () => JSON.parse(responseText || '{}'),
+      arrayBuffer: async () => responseBuffer.buffer.slice(
+        responseBuffer.byteOffset,
+        responseBuffer.byteOffset + responseBuffer.byteLength,
+      ),
+    };
+  };
+}
+
 async function getJsSecuritySigner(options = {}) {
   const {
     h5stAppId,
@@ -364,8 +415,9 @@ async function getJsSecuritySigner(options = {}) {
     scriptUrl = DEFAULT_JS_SECURITY_SCRIPT_URL,
     bizId = 'laputa',
     userAgent = DEFAULT_JR_USER_AGENT,
+    signerOptions = {},
   } = options;
-  const cacheKey = `${h5stAppId}:${pageUrl}:${scriptUrl}:${bizId}:${userAgent}:${getUserName(cookie)}`;
+  const cacheKey = `${h5stAppId}:${pageUrl}:${scriptUrl}:${bizId}:${userAgent}:${getUserName(cookie)}:${JSON.stringify(signerOptions)}`;
 
   if (jsSecuritySignerCache.has(cacheKey)) {
     return jsSecuritySignerCache.get(cacheKey);
@@ -385,17 +437,21 @@ async function getJsSecuritySigner(options = {}) {
     });
 
     const { window } = dom;
-    patchRiskWindow(window, { bizId, userAgent });
-    window.XMLHttpRequest = createNodeXmlHttpRequest(window, { cookie, userAgent });
+    patchRiskWindow(window, { bizId, userAgent, cookie });
     window.eval(scriptSource);
 
-    if (typeof window.ParamsSign !== 'function') {
+    const ParamsSignCtor = typeof window.ParamsSign === 'function'
+      ? window.ParamsSign
+      : (typeof window.ParamsSignLite === 'function' ? window.ParamsSignLite : null);
+
+    if (!ParamsSignCtor) {
       dom.window.close();
-      throw new Error('js_security 未暴露 ParamsSign');
+      throw new Error('js_security 未暴露 ParamsSign/ParamsSignLite');
     }
 
-    const signer = new window.ParamsSign({
+    const signer = new ParamsSignCtor({
       appId: h5stAppId,
+      ...signerOptions,
     });
 
     if (typeof signer._$rds === 'function') {
@@ -419,8 +475,9 @@ async function createJsSecurityH5st(options = {}) {
   const {
     h5stAppId,
     formFields,
+    signerOptions = {},
   } = options;
-  const signerContext = await getJsSecuritySigner(options);
+  const signerContext = await getJsSecuritySigner({ ...options, signerOptions });
   const signResult = await signerContext.signer.sign({ ...formFields });
   const h5st = signResult?.h5st || '';
 
@@ -486,6 +543,7 @@ function patchRiskWindow(window, options = {}) {
     userAgent = DEFAULT_JR_USER_AGENT,
     screenWidth = 390,
     screenHeight = 844,
+    cookie = '',
   } = options;
 
   Object.defineProperty(window.navigator, 'userAgent', {
@@ -505,6 +563,10 @@ function patchRiskWindow(window, options = {}) {
     value: ['zh-CN', 'zh'],
   });
   Object.defineProperty(window.navigator, 'hardwareConcurrency', {
+    configurable: true,
+    value: 8,
+  });
+  Object.defineProperty(window.navigator, 'deviceMemory', {
     configurable: true,
     value: 8,
   });
@@ -536,10 +598,30 @@ function patchRiskWindow(window, options = {}) {
     configurable: true,
     value: 24,
   });
+  if (globalThis.crypto?.webcrypto) {
+    Object.defineProperty(window, 'crypto', {
+      configurable: true,
+      value: globalThis.crypto.webcrypto,
+    });
+  }
+  if (window.Element?.prototype && typeof window.Element.prototype.scrollIntoView !== 'function') {
+    Object.defineProperty(window.Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      value() {},
+    });
+  }
+  window.scrollTo = window.scrollTo || function scrollTo() {};
+  window.scrollBy = window.scrollBy || function scrollBy() {};
+  window.requestAnimationFrame = window.requestAnimationFrame || function requestAnimationFrame(callback) {
+    return setTimeout(() => callback(Date.now()), 16);
+  };
+  window.cancelAnimationFrame = window.cancelAnimationFrame || function cancelAnimationFrame(timer) {
+    clearTimeout(timer);
+  };
   Object.defineProperty(window.HTMLCanvasElement.prototype, 'toDataURL', {
     configurable: true,
     value() {
-      return 'data:image/png;base64,AA==';
+      return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z1xQAAAAASUVORK5CYII=';
     },
   });
   Object.defineProperty(window.HTMLCanvasElement.prototype, 'getContext', {
@@ -552,11 +634,27 @@ function patchRiskWindow(window, options = {}) {
           fillStyle: '#f60',
           fillRect() {},
           fillText() {},
+          clearRect() {},
           beginPath() {},
           arc() {},
           closePath() {},
           fill() {},
           stroke() {},
+          save() {},
+          restore() {},
+          moveTo() {},
+          lineTo() {},
+          translate() {},
+          scale() {},
+          rotate() {},
+          rect() {},
+          clip() {},
+          drawImage() {},
+          putImageData() {},
+          createImageData() {
+            return [];
+          },
+          setTransform() {},
           measureText() {
             return { width: 10 };
           },
@@ -601,12 +699,31 @@ function patchRiskWindow(window, options = {}) {
         drawArrays() {},
         canvas: {
           toDataURL() {
-            return 'data:image/png;base64,AA==';
+            return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z1xQAAAAASUVORK5CYII=';
           },
         },
       };
     },
   });
+  window.fetch = createNodeFetch(window, { cookie, userAgent });
+  window.XMLHttpRequest = createNodeXmlHttpRequest(window, { cookie, userAgent });
+  window.XWebView = window.XWebView || {};
+  window.XWebView.callNative = window.XWebView.callNative || function callNative() {};
+  window.XWebView._callNative = window.XWebView._callNative || function _callNative() {};
+  window.webkit = window.webkit || { messageHandlers: {} };
+  window.getJdEid = window.getJdEid || function getJdEid(callback) {
+    if (typeof callback === 'function') {
+      callback({ eid: '', fp: '' }, '');
+    }
+  };
+  window.PerformanceObserver = window.PerformanceObserver || class PerformanceObserver {
+    observe() {}
+    disconnect() {}
+    takeRecords() { return []; }
+  };
+  window.performance = window.performance || {};
+  window.performance.mark = window.performance.mark || function mark() {};
+  window.performance.measure = window.performance.measure || function measure() {};
 
   window.console = {
     log() {},
@@ -674,7 +791,7 @@ async function getGiasRiskContext(cookie, options = {}) {
 
     try {
       const { window } = dom;
-      patchRiskWindow(window, { bizId, userAgent });
+      patchRiskWindow(window, { bizId, userAgent, cookie });
 
       const sourceCookieMap = parseCookieString(cookie);
       for (const [key, value] of sourceCookieMap.entries()) {
