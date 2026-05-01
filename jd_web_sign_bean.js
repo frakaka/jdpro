@@ -391,6 +391,9 @@ function getItemList(task) {
   if (ext === 'productsInfo') {
     return task.productList || [];
   }
+  if (ext === 'followShop') {
+    return task.shopList || [];
+  }
   if (ext === 'sign') {
     return task.signDetail ? [task.signDetail] : [];
   }
@@ -403,6 +406,9 @@ function buildBrowseUrl(task, item) {
   }
   if (task?.extraType === 'productsInfo' && (item?.skuId || item?.itemId)) {
     return `https://item.jd.com/${item.skuId || item.itemId}.html`;
+  }
+  if (task?.extraType === 'followShop' && (item?.shopId || item?.itemId)) {
+    return `https://mall.jd.com/index-${item.shopId || item.itemId}.html`;
   }
   return PAGE_URL;
 }
@@ -585,6 +591,9 @@ function buildChromeTaskExpression(cookie) {
       if (task?.extraType === 'productsInfo') {
         return task.productList || [];
       }
+      if (task?.extraType === 'followShop') {
+        return task.shopList || [];
+      }
       return [];
     };
     const isDrawableTask = (task) => {
@@ -599,6 +608,9 @@ function buildChromeTaskExpression(cookie) {
       }
       if (task?.extraType === 'productsInfo' && (item?.skuId || item?.itemId)) {
         return `https://item.jd.com/${item.skuId || item.itemId}.html`;
+      }
+      if (task?.extraType === 'followShop' && (item?.shopId || item?.itemId)) {
+        return `https://mall.jd.com/index-${item.shopId || item.itemId}.html`;
       }
       return input.pageUrl;
     };
