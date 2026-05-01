@@ -20,11 +20,13 @@ const DEFAULT_GIAS_SCRIPT_URL = 'https://gias.jd.com/js/m-tk.js';
 const DEFAULT_GIAS_PAGE_URL = 'https://pro.m.jd.com/';
 const GIAS_TIMEOUT_MS = 10000;
 const DEFAULT_JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.5.js?v=2406';
+const DEFAULT_BABEL_SECURITY_SCRIPT_URL = 'https://storage11.360buyimg.com/tower/babelnode/js/security.5e3cd16f.js';
 
 const riskContextCache = new Map();
 const giasScriptCache = new Map();
 const jsSecurityScriptCache = new Map();
 const jsSecuritySignerCache = new Map();
+const babelSecurityRuntimeCache = new Map();
 let jsdomDeps = null;
 
 function Env(name) {
@@ -416,8 +418,9 @@ async function getJsSecuritySigner(options = {}) {
     bizId = 'laputa',
     userAgent = DEFAULT_JR_USER_AGENT,
     signerOptions = {},
+    localStorageSeed = {},
   } = options;
-  const cacheKey = `${h5stAppId}:${pageUrl}:${scriptUrl}:${bizId}:${userAgent}:${getUserName(cookie)}:${JSON.stringify(signerOptions)}`;
+  const cacheKey = `${h5stAppId}:${pageUrl}:${scriptUrl}:${bizId}:${userAgent}:${getUserName(cookie)}:${JSON.stringify(signerOptions)}:${JSON.stringify(localStorageSeed)}`;
 
   if (jsSecuritySignerCache.has(cacheKey)) {
     return jsSecuritySignerCache.get(cacheKey);
@@ -438,6 +441,13 @@ async function getJsSecuritySigner(options = {}) {
 
     const { window } = dom;
     patchRiskWindow(window, { bizId, userAgent, cookie });
+    for (const [key, value] of Object.entries(localStorageSeed || {})) {
+      try {
+        window.localStorage.setItem(key, String(value));
+      } catch (error) {
+        // localStorage 预置失败时退回 js_security 自己生成，不阻断其他脚本。
+      }
+    }
     window.eval(scriptSource);
 
     const ParamsSignCtor = typeof window.ParamsSign === 'function'
@@ -449,16 +459,22 @@ async function getJsSecuritySigner(options = {}) {
       throw new Error('js_security 未暴露 ParamsSign/ParamsSignLite');
     }
 
+    const {
+      skipManualPrepare = false,
+      ...paramsSignOptions
+    } = signerOptions || {};
     const signer = new ParamsSignCtor({
       appId: h5stAppId,
-      ...signerOptions,
+      ...paramsSignOptions,
     });
 
-    if (typeof signer._$rds === 'function') {
-      signer._$rds();
-    }
-    if (typeof signer._$rgo === 'function') {
-      await signer._$rgo();
+    if (!skipManualPrepare) {
+      if (typeof signer._$rds === 'function') {
+        signer._$rds();
+      }
+      if (typeof signer._$rgo === 'function') {
+        await signer._$rgo();
+      }
     }
 
     return {
@@ -486,6 +502,120 @@ async function createJsSecurityH5st(options = {}) {
   }
 
   return h5st;
+}
+
+async function getBabelSecurityRuntime(options = {}) {
+  const {
+    cookie = '',
+    pageUrl = 'https://pro.m.jd.com/',
+    scriptUrl = DEFAULT_BABEL_SECURITY_SCRIPT_URL,
+    bizId = 'pro',
+    userAgent = DEFAULT_JR_USER_AGENT,
+  } = options;
+  const cacheKey = `${pageUrl}:${scriptUrl}:${bizId}:${userAgent}:${getUserName(cookie)}`;
+
+  if (babelSecurityRuntimeCache.has(cacheKey)) {
+    return babelSecurityRuntimeCache.get(cacheKey);
+  }
+
+  const runtimePromise = (async () => {
+    const { JSDOM, VirtualConsole } = loadJsdomDependencies();
+    const virtualConsole = new VirtualConsole();
+    const scriptSource = await getJsSecurityScript(scriptUrl, { referer: pageUrl, userAgent });
+    const dom = new JSDOM('<!doctype html><html><head></head><body></body></html>', {
+      url: pageUrl,
+      referrer: pageUrl,
+      runScripts: 'outside-only',
+      pretendToBeVisual: true,
+      resources: 'usable',
+      virtualConsole,
+    });
+
+    const { window } = dom;
+    patchRiskWindow(window, { bizId, userAgent, cookie });
+    window.eval(scriptSource);
+
+    const babelSecurity = await Promise.race([
+      window.babelSecurity,
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('babelSecurity 初始化超时')), REQUEST_TIMEOUT_MS);
+      }),
+    ]);
+
+    if (!babelSecurity || typeof babelSecurity.mergeSecurityParams !== 'function') {
+      dom.window.close();
+      throw new Error('babelSecurity 未暴露 mergeSecurityParams');
+    }
+
+    try {
+      await babelSecurity.mergeSecurityParams({}, {});
+    } catch (error) {
+      // 预热失败不阻断真实流程
+    }
+
+    return {
+      dom,
+      babelSecurity,
+    };
+  })();
+
+  babelSecurityRuntimeCache.set(cacheKey, runtimePromise);
+  return runtimePromise;
+}
+
+async function createBabelSecurityParams(options = {}) {
+  const {
+    formFields = {},
+    headers = {},
+    signSourceFields = null,
+    signerOptions = {},
+  } = options;
+  const runtime = await getBabelSecurityRuntime(options);
+  const result = await runtime.babelSecurity.mergeSecurityParams(
+    { ...formFields },
+    { ...headers },
+  );
+  const [mergedFieldsRaw, mergedHeaders] = Array.isArray(result)
+    ? result
+    : [formFields, headers];
+  const mergedFields = mergedFieldsRaw || formFields;
+
+  if (!mergedFields.h5st && typeof runtime.babelSecurity.signParams === 'function' && signSourceFields) {
+    try {
+      const signResult = await runtime.babelSecurity.signParams(
+        { ...signSourceFields },
+        signerOptions,
+      );
+      if (signResult?.h5st) {
+        mergedFields.h5st = signResult.h5st;
+      }
+    } catch (error) {
+      // 忽略 signParams 回退异常，保持 mergeSecurityParams 原结果
+    }
+  }
+
+  if (!mergedFields.h5st && typeof runtime.babelSecurity.PramsSignLib === 'function' && signSourceFields) {
+    try {
+      const signer = new runtime.babelSecurity.PramsSignLib({ ...signerOptions });
+      if (typeof signer._$rds === 'function') {
+        signer._$rds();
+      }
+      if (typeof signer._$rgo === 'function') {
+        await signer._$rgo();
+      }
+      const signResult = await signer.sign({ ...signSourceFields });
+      if (signResult?.h5st) {
+        mergedFields.h5st = signResult.h5st;
+      }
+    } catch (error) {
+      // 忽略 PramsSignLib 回退异常，保持当前结果
+    }
+  }
+
+  return {
+    formFields: mergedFields,
+    headers: mergedHeaders || headers,
+  };
 }
 
 function buildHeaders(cookie, options = {}) {
@@ -566,6 +696,26 @@ function patchRiskWindow(window, options = {}) {
     configurable: true,
     value: 8,
   });
+  Object.defineProperty(window.navigator, 'vendor', {
+    configurable: true,
+    value: 'Apple Computer, Inc.',
+  });
+  Object.defineProperty(window.navigator, 'maxTouchPoints', {
+    configurable: true,
+    value: 5,
+  });
+  Object.defineProperty(window.navigator, 'webdriver', {
+    configurable: true,
+    value: false,
+  });
+  Object.defineProperty(window.navigator, 'cookieEnabled', {
+    configurable: true,
+    value: true,
+  });
+  Object.defineProperty(window.navigator, 'onLine', {
+    configurable: true,
+    value: true,
+  });
   Object.defineProperty(window.navigator, 'deviceMemory', {
     configurable: true,
     value: 8,
@@ -598,6 +748,71 @@ function patchRiskWindow(window, options = {}) {
     configurable: true,
     value: 24,
   });
+  Object.defineProperty(window.screen, 'pixelDepth', {
+    configurable: true,
+    value: 24,
+  });
+  Object.defineProperty(window, 'devicePixelRatio', {
+    configurable: true,
+    value: 3,
+  });
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value: screenWidth,
+  });
+  Object.defineProperty(window, 'innerHeight', {
+    configurable: true,
+    value: screenHeight,
+  });
+  Object.defineProperty(window, 'outerWidth', {
+    configurable: true,
+    value: screenWidth,
+  });
+  Object.defineProperty(window, 'outerHeight', {
+    configurable: true,
+    value: screenHeight,
+  });
+  Object.defineProperty(window, 'screenX', {
+    configurable: true,
+    value: 0,
+  });
+  Object.defineProperty(window, 'screenY', {
+    configurable: true,
+    value: 0,
+  });
+  Object.defineProperty(window, 'screenLeft', {
+    configurable: true,
+    value: 0,
+  });
+  Object.defineProperty(window, 'screenTop', {
+    configurable: true,
+    value: 0,
+  });
+  Object.defineProperty(window.document, 'hidden', {
+    configurable: true,
+    value: false,
+  });
+  Object.defineProperty(window.document, 'visibilityState', {
+    configurable: true,
+    value: 'visible',
+  });
+  Object.defineProperty(window, 'visualViewport', {
+    configurable: true,
+    value: {
+      width: screenWidth,
+      height: screenHeight,
+      scale: 1,
+      offsetLeft: 0,
+      offsetTop: 0,
+      pageLeft: 0,
+      pageTop: 0,
+      addEventListener() {},
+      removeEventListener() {},
+    },
+  });
+  window.orientation = 0;
+  window.Touch = window.Touch || function Touch() {};
+  window.TouchEvent = window.TouchEvent || function TouchEvent() {};
   if (globalThis.crypto?.webcrypto) {
     Object.defineProperty(window, 'crypto', {
       configurable: true,
@@ -665,10 +880,34 @@ function patchRiskWindow(window, options = {}) {
       }
 
       return {
-        getParameter() {
+        getParameter(parameter) {
+          if (parameter === 37445) {
+            return 'Apple Inc.';
+          }
+          if (parameter === 37446) {
+            return 'Apple GPU';
+          }
+          if (parameter === 7936) {
+            return 'WebKit';
+          }
+          if (parameter === 7937) {
+            return 'WebKit WebGL';
+          }
+          if (parameter === 7938) {
+            return 'WebGL 1.0';
+          }
+          if (parameter === 3379) {
+            return 4096;
+          }
           return 1;
         },
-        getExtension() {
+        getExtension(name) {
+          if (name === 'WEBGL_debug_renderer_info') {
+            return {
+              UNMASKED_VENDOR_WEBGL: 37445,
+              UNMASKED_RENDERER_WEBGL: 37446,
+            };
+          }
           return null;
         },
         createBuffer() {
@@ -707,6 +946,76 @@ function patchRiskWindow(window, options = {}) {
   });
   window.fetch = createNodeFetch(window, { cookie, userAgent });
   window.XMLHttpRequest = createNodeXmlHttpRequest(window, { cookie, userAgent });
+  const loadedScriptMap = new Map();
+  const loadExternalScript = async (node) => {
+    const rawSrc = node?.src || (typeof node?.getAttribute === 'function' ? node.getAttribute('src') : '');
+    if (!rawSrc) {
+      return;
+    }
+
+    const scriptUrl = new URL(rawSrc, window.location.href).toString();
+    if (!loadedScriptMap.has(scriptUrl)) {
+      loadedScriptMap.set(scriptUrl, (async () => {
+        const response = await got.get(scriptUrl, {
+          headers: {
+            Referer: window.location.href,
+            Origin: window.location.origin,
+            'User-Agent': userAgent,
+            Cookie: cookie,
+          },
+          throwHttpErrors: false,
+          timeout: { request: REQUEST_TIMEOUT_MS },
+        });
+
+        if (response.statusCode >= 400 || !response.body) {
+          throw new Error(`动态脚本加载失败：HTTP ${response.statusCode} ${scriptUrl}`);
+        }
+
+        window.eval(response.body);
+      })());
+    }
+
+    try {
+      await loadedScriptMap.get(scriptUrl);
+      if (typeof node.onload === 'function') {
+        node.onload();
+      }
+      if (typeof node.onreadystatechange === 'function') {
+        node.readyState = 'complete';
+        node.onreadystatechange();
+      }
+      if (typeof node.dispatchEvent === 'function') {
+        node.dispatchEvent(new window.Event('load'));
+      }
+    } catch (error) {
+      if (typeof node.onerror === 'function') {
+        node.onerror(error);
+      }
+      if (typeof node.dispatchEvent === 'function') {
+        node.dispatchEvent(new window.Event('error'));
+      }
+    }
+  };
+  const patchScriptInsertion = (prototype, methodName) => {
+    if (!prototype || typeof prototype[methodName] !== 'function') {
+      return;
+    }
+
+    const originalMethod = prototype[methodName];
+    Object.defineProperty(prototype, methodName, {
+      configurable: true,
+      writable: true,
+      value(node, ...args) {
+        const result = originalMethod.call(this, node, ...args);
+        if (node?.tagName === 'SCRIPT' && (node.src || (typeof node.getAttribute === 'function' && node.getAttribute('src')))) {
+          Promise.resolve().then(() => loadExternalScript(node));
+        }
+        return result;
+      },
+    });
+  };
+  patchScriptInsertion(window.Node?.prototype, 'appendChild');
+  patchScriptInsertion(window.Node?.prototype, 'insertBefore');
   window.XWebView = window.XWebView || {};
   window.XWebView.callNative = window.XWebView.callNative || function callNative() {};
   window.XWebView._callNative = window.XWebView._callNative || function _callNative() {};
@@ -721,9 +1030,27 @@ function patchRiskWindow(window, options = {}) {
     disconnect() {}
     takeRecords() { return []; }
   };
-  window.performance = window.performance || {};
-  window.performance.mark = window.performance.mark || function mark() {};
-  window.performance.measure = window.performance.measure || function measure() {};
+  let performanceObject;
+  try {
+    performanceObject = window.performance;
+  } catch (error) {
+    performanceObject = undefined;
+  }
+  if (!performanceObject) {
+    performanceObject = {};
+    try {
+      Object.defineProperty(window, 'performance', {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: performanceObject,
+      });
+    } catch (error) {
+      performanceObject = {};
+    }
+  }
+  performanceObject.mark = performanceObject.mark || function mark() {};
+  performanceObject.measure = performanceObject.measure || function measure() {};
 
   window.console = {
     log() {},
@@ -1004,11 +1331,13 @@ function hasJingBeanReward(task) {
 
 module.exports = {
   buildHeaders,
+  createBabelSecurityParams,
   createH5st,
   createJsSecurityH5st,
   DEFAULT_JR_USER_AGENT,
   DEFAULT_USER_AGENT,
   Env,
+  getBabelSecurityRuntime,
   getQueryApi,
   getGiasRiskContext,
   getRequestUuid,
