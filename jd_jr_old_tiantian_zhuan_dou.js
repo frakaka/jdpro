@@ -40,7 +40,7 @@ const {
   stringifySnippet,
 } = require('./function/jdHarBeanCommon');
 
-const $ = new Env('金融old天天赚豆');
+const $ = new Env('金融天天领红包赚豆');
 
 const USER_AGENT = DEFAULT_JR_USER_AGENT;
 const AAR2_URL = 'https://jrsecstatic.jdpay.com/jr-sec-dev-static/aar2-2.1.0.min.js';
