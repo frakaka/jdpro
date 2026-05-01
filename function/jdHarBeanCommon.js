@@ -48,8 +48,14 @@ function sleep(ms) {
 }
 
 function getUserName(cookie) {
-  const match = String(cookie || '').match(/pt_pin=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : '未知账号';
+  const cookieMap = parseCookieString(cookie);
+  for (const key of ['pt_pin', 'pin', '_pst']) {
+    const value = cookieMap.get(key);
+    if (value) {
+      return decodeURIComponent(value);
+    }
+  }
+  return '未知账号';
 }
 
 function getCookieValue(cookie, key) {
