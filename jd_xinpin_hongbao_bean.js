@@ -8,7 +8,7 @@ cron:42 0 * * * jd_xinpin_hongbao_bean.js
    可选，补充活动页完整 Cookie。
 
 2. JD_XINPIN_HONGBAO_TARGETS
-   可选，逗号分隔的任务名关键词。默认跑 4 个频道领京豆任务。
+   可选，逗号分隔的任务名关键词。不配置时跑所有待逛的京豆/红包任务。
 
 3. JD_XINPIN_HONGBAO_DEBUG
    可选，配置为 1 时打印接口原始返回片段。
@@ -59,12 +59,6 @@ const TASK_FLOOR_ID = '126454030';
 const WORKFLOW_ID = '5b7b7ba0683542e3838798b04e2d8e92';
 const BROWSE_WAIT_MS = 10000;
 const JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/js_security_v3_lite_0.1.5.js';
-const DEFAULT_TARGET_KEYWORDS = [
-  '去秒杀签到领京豆',
-  '逛新奇集市领京豆',
-  '逛京喜',
-  '逛省钱频道领京豆',
-];
 const COMMON_EXTRA_HEADERS = {
   'request-from': 'native',
   'sec-fetch-site': 'same-site',
@@ -76,12 +70,22 @@ const DEFAULT_CHROME_BIN = '/usr/bin/chromium';
 const CHROME_DEBUG_HOST = '127.0.0.1';
 const CHROME_START_TIMEOUT_MS = 15000;
 const CHROME_NAVIGATE_TIMEOUT_MS = 45000;
-const CHROME_EVALUATE_TIMEOUT_MS = 120000;
+const CHROME_EVALUATE_TIMEOUT_MS = 900000;
+const CHROME_SIGN_RUNTIME_TIMEOUT_MS = 45000;
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
 
 function isDebugEnabled() {
   return process.env.JD_XINPIN_HONGBAO_DEBUG === '1';
+}
+
+function shouldPrintAllTasks() {
+  return process.env.JD_XINPIN_HONGBAO_PRINT_ALL_TASKS !== '0';
+}
+
+function getRawResponseLogLimit() {
+  const value = Number(process.env.JD_XINPIN_HONGBAO_RAW_LIMIT || 20000);
+  return Number.isFinite(value) && value > 0 ? value : 20000;
 }
 
 function shouldUseChrome() {
@@ -127,9 +131,6 @@ function debugRequest(functionId, url, formBody, h5st, eidToken) {
 
 function getTargetKeywords() {
   const rawValue = String(process.env.JD_XINPIN_HONGBAO_TARGETS || '').trim();
-  if (!rawValue) {
-    return DEFAULT_TARGET_KEYWORDS;
-  }
   return rawValue.split(',').map((item) => item.trim()).filter(Boolean);
 }
 
@@ -310,6 +311,9 @@ async function postNewtry(cookie, functionId, bodyObject, options = {}) {
     timeout: { request: 15000 },
   });
   const result = safeJsonParse(response.body, { code: response.statusCode, message: response.body });
+  if (isDebugEnabled() && functionId === 'qryH5BabelFloors') {
+    $.log(`账号${$.index} ${$.UserName}: qryH5BabelFloors 原始response => ${String(response.body || '').slice(0, getRawResponseLogLimit())}`);
+  }
   const sdtoken = extractSdToken(response);
   const nextCookie = sdtoken ? mergeCookieString(cookie, { sdtoken }) : cookie;
   return attachUpdatedCookie(result, nextCookie);
@@ -353,12 +357,19 @@ function isPendingItem(item) {
   return String(item?.status ?? item?.taskStatus ?? '1') !== '2' && Boolean(item?.url);
 }
 
-function isTargetTask(task, keywords) {
+function isTaskNameAllowed(task, keywords) {
+  if (!keywords.length) {
+    return true;
+  }
   const taskName = String(task?.assignmentName || '');
+  return keywords.some((keyword) => taskName.includes(keyword));
+}
+
+function isTargetTask(task, keywords) {
   const ext = task?.ext || {};
   const items = Array.isArray(ext.shoppingActivity) ? ext.shoppingActivity : [];
   return (
-    keywords.some((keyword) => taskName.includes(keyword)) &&
+    isTaskNameAllowed(task, keywords) &&
     Number(ext.waitDuration || 0) >= 0 &&
     items.some(isPendingItem) &&
     hasRewardKeyword(task)
@@ -374,6 +385,13 @@ function summarizeTask(task) {
     .join('/');
   const pendingCount = items.filter(isPendingItem).length;
   return `${task.assignmentName} | encAid=${task.encryptAssignmentId} | 待逛=${pendingCount}/${items.length} | reward=${rewardText || '-'}`;
+}
+
+function summarizeTargetFilter(task, keywords) {
+  const ext = task?.ext || {};
+  const items = Array.isArray(ext.shoppingActivity) ? ext.shoppingActivity : [];
+  const keywordHit = isTaskNameAllowed(task, keywords);
+  return `${summarizeTask(task)} | keyword=${keywordHit} | reward=${hasRewardKeyword(task)} | wait=${ext.waitDuration ?? '-'} | statuses=${items.map((item) => `${item.title || item.itemId}:${item.status ?? item.taskStatus ?? '-'}`).join(',') || '-'}`;
 }
 
 function extractOpenAppTaskUrl(toUrl) {
@@ -693,6 +711,10 @@ function buildChromeTaskExpression(cookie) {
     browseWaitMs: BROWSE_WAIT_MS,
     targetKeywords: getTargetKeywords(),
     debug: isDebugEnabled(),
+    printAllTasks: shouldPrintAllTasks(),
+    rawLogLimit: getRawResponseLogLimit(),
+    signRuntimeTimeoutMs: CHROME_SIGN_RUNTIME_TIMEOUT_MS,
+    jsSecurityScriptUrl: JS_SECURITY_SCRIPT_URL,
   };
 
   return `(${async function runXinpinHongbaoInChrome(input) {
@@ -733,6 +755,43 @@ function buildChromeTaskExpression(cookie) {
         await sleep(200);
       }
       throw new Error(`等待页面运行态超时: ${label}`);
+    };
+    const loadScript = (url, timeoutMs) => new Promise((resolve, reject) => {
+      const existingScript = Array.from(document.scripts).find((script) => script.src === url);
+      if (existingScript && existingScript.dataset.loaded === '1') {
+        resolve();
+        return;
+      }
+      const script = existingScript || document.createElement('script');
+      const timer = setTimeout(() => reject(new Error(`加载脚本超时: ${url}`)), timeoutMs);
+      script.onload = () => {
+        clearTimeout(timer);
+        script.dataset.loaded = '1';
+        resolve();
+      };
+      script.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error(`加载脚本失败: ${url}`));
+      };
+      if (!existingScript) {
+        script.src = url;
+        document.head.appendChild(script);
+      }
+    });
+    const ensureSignRuntime = async () => {
+      try {
+        await waitFor(() => typeof window.ParamsSignLite === 'function', 15000, 'ParamsSignLite');
+      } catch (error) {
+        log(`Chrome 签名运行态未自动加载，注入脚本 => ${input.jsSecurityScriptUrl}`);
+        await loadScript(input.jsSecurityScriptUrl, 15000);
+        await waitFor(() => typeof window.ParamsSignLite === 'function', input.signRuntimeTimeoutMs, 'ParamsSignLite');
+      }
+      try {
+        await waitFor(() => typeof window.getJsToken === 'function', 15000, 'getJsToken');
+      } catch (error) {
+        await loadScript(input.jsSecurityScriptUrl, 15000).catch(() => null);
+        await waitFor(() => typeof window.getJsToken === 'function', input.signRuntimeTimeoutMs, 'getJsToken');
+      }
     };
     const getRequestUuid = () => {
       const cookieMap = new Map(document.cookie.split(';').map((item) => {
@@ -798,21 +857,31 @@ function buildChromeTaskExpression(cookie) {
         body: form,
       });
       const text = await response.text();
-      return safeJson(text, { code: response.status, message: text });
+      return {
+        parsed: safeJson(text, { code: response.status, message: text }),
+        raw: text,
+      };
     };
-    const queryBabelFloors = () => postNewtry('qryH5BabelFloors', {
-      activityId: input.activityId,
-      pageId: input.pageId,
-      queryFloorsParam: {
-        floorParams: {
-          [input.taskFloorId]: {
-            channel: '',
-            showTask: '1',
+    const queryBabelFloors = async () => {
+      const response = await postNewtry('qryH5BabelFloors', {
+        activityId: input.activityId,
+        pageId: input.pageId,
+        queryFloorsParam: {
+          floorParams: {
+            [input.taskFloorId]: {
+              channel: '',
+              showTask: '1',
+            },
           },
+          type: 2,
         },
-        type: 2,
-      },
-    });
+      });
+      if (input.debug) {
+        const raw = response.raw || '';
+        log(`Chrome qryH5BabelFloors 原始response => ${raw.slice(0, input.rawLogLimit)}`);
+      }
+      return response.parsed;
+    };
     const getAssignments = (response) => response?.floorResponse?.[input.taskFloorId]?.providerData?.data?.assignments?.assignmentList || [];
     const isPendingItem = (item) => String(item?.status ?? item?.taskStatus ?? '1') !== '2' && Boolean(item?.url);
     const hasRewardKeyword = (task) => /京豆|新品红包|红包/.test(JSON.stringify({
@@ -820,34 +889,71 @@ function buildChromeTaskExpression(cookie) {
       desc: task?.assignmentDesc,
       rewards: task?.rewards,
     }));
-    const isTargetTask = (task) => {
+    const isTaskNameAllowed = (task) => {
+      if (!input.targetKeywords.length) {
+        return true;
+      }
       const taskName = String(task?.assignmentName || '');
+      return input.targetKeywords.some((keyword) => taskName.includes(keyword));
+    };
+    const summarizeReward = (task) => (task?.rewards || [])
+      .map((reward) => reward.rewardName || reward.rewardValue || reward.discount)
+      .filter(Boolean)
+      .join('/') || '-';
+    const isTargetTask = (task) => {
       const items = Array.isArray(task?.ext?.shoppingActivity) ? task.ext.shoppingActivity : [];
-      return input.targetKeywords.some((keyword) => taskName.includes(keyword)) && items.some(isPendingItem) && hasRewardKeyword(task);
+      return isTaskNameAllowed(task) && items.some(isPendingItem) && hasRewardKeyword(task);
     };
     const summarizeTask = (task) => {
       const items = Array.isArray(task?.ext?.shoppingActivity) ? task.ext.shoppingActivity : [];
-      return `${task.assignmentName} | encAid=${task.encryptAssignmentId} | 待逛=${items.filter(isPendingItem).length}/${items.length}`;
+      const reward = summarizeReward(task);
+      const itemStatus = items.map((item) => `${item.title || item.itemId}:${item.status ?? item.taskStatus ?? '-'}`).join(',');
+      return `${task.assignmentName} | encAid=${task.encryptAssignmentId} | 待逛=${items.filter(isPendingItem).length}/${items.length} | reward=${reward} | itemStatus=${itemStatus || '-'}`;
     };
-    const executeWorkflow = (action, task, item, extraBody = {}) => postNewtry('luban_executeWorkflow', {
-      workflowId: input.workflowId,
-      action,
-      encAid: task.encryptAssignmentId,
-      itemId: String(item.itemId),
-      interactNum: 0,
-      ...extraBody,
-    }, { withUuid: true });
+    const executeWorkflow = async (action, task, item, extraBody = {}) => {
+      const response = await postNewtry('luban_executeWorkflow', {
+        workflowId: input.workflowId,
+        action,
+        encAid: task.encryptAssignmentId,
+        itemId: String(item.itemId),
+        interactNum: 0,
+        ...extraBody,
+      }, { withUuid: true });
+      return response.parsed;
+    };
 
     setCookie(input.cookie);
-    await waitFor(() => typeof window.ParamsSignLite === 'function', 15000, 'ParamsSignLite');
-    await waitFor(() => typeof window.getJsToken === 'function', 15000, 'getJsToken');
+    await ensureSignRuntime();
 
     const floors = await queryBabelFloors();
     const assignments = getAssignments(floors);
     const targetTasks = assignments.filter(isTargetTask);
     log(`Chrome qryH5BabelFloors => code=${floors?.code || '-'} isLogin=${floors?.isLogin} assignments=${assignments.length}`);
+    if (input.printAllTasks) {
+      assignments.forEach((task, index) => {
+        log(`Chrome 任务条目${index + 1} => ${summarizeTask(task)}`);
+      });
+    }
     log(`Chrome 目标浏览任务数 => ${targetTasks.length}`);
     targetTasks.forEach((task) => log(`Chrome 任务摘要 => ${summarizeTask(task)}`));
+    if (!targetTasks.length) {
+      const keywordCandidates = assignments.filter((task) => {
+        if (!input.targetKeywords.length) {
+          return false;
+        }
+        const taskName = String(task?.assignmentName || '');
+        return input.targetKeywords.some((keyword) => taskName.includes(keyword));
+      });
+      keywordCandidates.forEach((task) => {
+        const items = Array.isArray(task?.ext?.shoppingActivity) ? task.ext.shoppingActivity : [];
+        log(`Chrome 目标候选已过滤 => ${summarizeTask(task)} | reward=${summarizeReward(task)} | statuses=${items.map((item) => `${item.title || item.itemId}:${item.status ?? item.taskStatus ?? '-'}`).join(',') || '-'}`);
+      });
+      if (!keywordCandidates.length) {
+        assignments.slice(0, 10).forEach((task) => {
+          log(`Chrome 非目标任务样例 => ${summarizeTask(task)} | reward=${summarizeReward(task)}`);
+        });
+      }
+    }
 
     for (const task of targetTasks) {
       const items = (task?.ext?.shoppingActivity || []).filter(isPendingItem);
@@ -957,9 +1063,21 @@ async function handleAccount(cookie, index) {
   const targetTasks = assignments.filter((task) => isTargetTask(task, getTargetKeywords()));
 
   $.log(`账号${index} ${$.UserName}: 新品任务数 => ${assignments.length}`);
+  if (shouldPrintAllTasks()) {
+    assignments.forEach((task, taskIndex) => {
+      $.log(`账号${index} ${$.UserName}: 任务条目${taskIndex + 1} => ${summarizeTask(task)}`);
+    });
+  }
   $.log(`账号${index} ${$.UserName}: 目标浏览任务数 => ${targetTasks.length}`);
   for (const task of targetTasks) {
     $.log(`账号${index} ${$.UserName}: 任务摘要 => ${summarizeTask(task)}`);
+  }
+  if (!targetTasks.length) {
+    const keywords = getTargetKeywords();
+    const keywordCandidates = assignments.filter((task) => keywords.some((keyword) => String(task?.assignmentName || '').includes(keyword)));
+    for (const task of keywordCandidates) {
+      $.log(`账号${index} ${$.UserName}: 目标候选已过滤 => ${summarizeTargetFilter(task, keywords)}`);
+    }
   }
 
   for (const task of targetTasks) {
