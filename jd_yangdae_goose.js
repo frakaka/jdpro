@@ -822,6 +822,7 @@ function canBrowseMission(mission) {
   const hasBrowseIntent = /逛|浏览|去逛逛|去浏览|查看/.test(text);
   const hasActionIntent = /打一笔|完成1笔|分期|借1笔|看视频|开炮|通过.*关|关注|领取|提现|额度/.test(text);
   const hasBrowseUrlHint = missionUrl.includes('jumpmission-v2')
+    || missionUrl.includes('/static-page')
     || missionUrl.includes('readTime=')
     || missionUrl.includes('babelChannel=')
     || missionUrl.includes('/mall/active/')
@@ -832,6 +833,10 @@ function canBrowseMission(mission) {
 
   if (buttonText !== '去完成' && buttonText !== '去浏览') {
     return false;
+  }
+
+  if (missionUrl.includes('/static-page')) {
+    return true;
   }
 
   if (hasActionIntent && !hasBrowseIntent) {
@@ -1024,6 +1029,10 @@ function formatMissionList(missions) {
   });
 
   return `任务列表: ${items.join(' | ')}`;
+}
+
+function getMissionIdentity(mission) {
+  return `${mission?.mid || ''}|${mission?.gid || ''}|${mission?.type || ''}`;
 }
 
 async function openMissionPage(cookie, mission, chromeRuntime, aar2Context) {
@@ -1219,66 +1228,85 @@ function findMissionByIdentity(missions, mission) {
 }
 
 async function handleMissions(cookie, aar2Context, chromeRuntime) {
-  const missions = await fetchMissionList(cookie, aar2Context);
-  const messages = [formatMissionList(missions)];
+  let currentMissions = await fetchMissionList(cookie, aar2Context);
+  const messages = [formatMissionList(currentMissions)];
+  const processedClaimMissionIds = new Set();
+  const processedBrowseMissionIds = new Set();
 
-  const claimableMissions = missions.filter(canClaimMission);
-  for (const mission of claimableMissions) {
+  while (true) {
+    const claimableMission = currentMissions.find((mission) => (
+      canClaimMission(mission) && !processedClaimMissionIds.has(getMissionIdentity(mission))
+    ));
+    if (!claimableMission) {
+      break;
+    }
+
+    processedClaimMissionIds.add(getMissionIdentity(claimableMission));
     try {
-      const result = await doMission(cookie, aar2Context, mission);
+      const result = await doMission(cookie, aar2Context, claimableMission);
       if (result.opResult !== 0) {
         const busySuffix = isTaskBusyResult(result) ? '，继续下一个任务' : '';
-        messages.push(`任务 ${mission.missionName || mission.gid}: ${result.resultMsg || mission.buttonText || stringifySnippet(result, 200)}${busySuffix}`);
+        messages.push(`任务 ${claimableMission.missionName || claimableMission.gid}: ${result.resultMsg || claimableMission.buttonText || stringifySnippet(result, 200)}${busySuffix}`);
         continue;
       }
-      messages.push(`任务 ${mission.missionName || mission.gid}: ${formatMissionAward(result)}`);
+      messages.push(`任务 ${claimableMission.missionName || claimableMission.gid}: ${formatMissionAward(result)}`);
     } catch (error) {
-      messages.push(`任务 ${mission.missionName || mission.gid}: ${error.message || error}`);
+      messages.push(`任务 ${claimableMission.missionName || claimableMission.gid}: ${error.message || error}`);
     } finally {
       await sleep(TASK_INTERVAL_MS);
+      currentMissions = await fetchMissionList(cookie, aar2Context).catch(() => currentMissions);
     }
   }
 
-  const browseMissions = missions.filter(canBrowseMission).slice(0, getTaskLimit());
-  for (const mission of browseMissions) {
+  while (processedBrowseMissionIds.size < getTaskLimit()) {
+    const browseMission = currentMissions.find((mission) => (
+      canBrowseMission(mission) && !processedBrowseMissionIds.has(getMissionIdentity(mission))
+    ));
+    if (!browseMission) {
+      break;
+    }
+
+    processedBrowseMissionIds.add(getMissionIdentity(browseMission));
     try {
-      const visitResult = await openMissionPage(cookie, mission, chromeRuntime, aar2Context);
+      const visitResult = await openMissionPage(cookie, browseMission, chromeRuntime, aar2Context);
       if (!visitResult.success) {
-        messages.push(`任务 ${mission.missionName || mission.gid}: ${visitResult.message}`);
+        messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${visitResult.message}`);
         continue;
       }
 
       await sleep(TASK_INTERVAL_MS);
-      let result = await doMission(cookie, aar2Context, mission);
+      let result = await doMission(cookie, aar2Context, browseMission);
       if (result.opResult !== 0) {
         const busySuffix = isTaskBusyResult(result) ? '，继续下一个任务' : '';
-        messages.push(`任务 ${mission.missionName || mission.gid}: ${result.resultMsg || mission.buttonText || stringifySnippet(result, 200)}${busySuffix}`);
+        messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${result.resultMsg || browseMission.buttonText || stringifySnippet(result, 200)}${busySuffix}`);
         continue;
       }
 
       if (Number(result.status) === 3) {
         await sleep(TASK_INTERVAL_MS);
-        const refreshedMission = findMissionByIdentity(await fetchMissionList(cookie, aar2Context), mission);
+        currentMissions = await fetchMissionList(cookie, aar2Context).catch(() => currentMissions);
+        const refreshedMission = findMissionByIdentity(currentMissions, browseMission);
         if (refreshedMission && canClaimMission(refreshedMission)) {
           result = await doMission(cookie, aar2Context, refreshedMission);
         }
       }
 
       if (result.opResult !== 0) {
-        messages.push(`任务 ${mission.missionName || mission.gid}: ${result.resultMsg || mission.buttonText || stringifySnippet(result, 200)}`);
+        messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${result.resultMsg || browseMission.buttonText || stringifySnippet(result, 200)}`);
         continue;
       }
 
       if (Number(result.status) === 3) {
-        messages.push(`任务 ${mission.missionName || mission.gid}: 浏览已提交，但服务端仍未判定完成`);
+        messages.push(`任务 ${browseMission.missionName || browseMission.gid}: 浏览已提交，但服务端仍未判定完成`);
         continue;
       }
 
-      messages.push(`任务 ${mission.missionName || mission.gid}: ${formatMissionAward(result)}`);
+      messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${formatMissionAward(result)}`);
     } catch (error) {
-      messages.push(`任务 ${mission.missionName || mission.gid}: ${error.message || error}`);
+      messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${error.message || error}`);
     } finally {
       await sleep(TASK_INTERVAL_MS);
+      currentMissions = await fetchMissionList(cookie, aar2Context).catch(() => currentMissions);
     }
   }
 
