@@ -2,23 +2,27 @@
 cron:32 0 * * * jd_jr_rmzhishu_growth.js
 
 环境变量说明：
-1. JDJR_RMZHISHU_GROWTH_FULL_COOKIE
-   含义：可选的热门指数页完整 Cookie，会合并到 JD_COOKIE 上。
-   是否必须：否，但只有 pt_key/pt_pin 时建议补充。
-
-2. JDJR_RMZHISHU_GROWTH_SDK_TOKEN
+1. JDJR_RMZHISHU_GROWTH_SDK_TOKEN
    含义：prReceiveAwardBatch 风控参数中的 sdkToken。
    是否必须：否，默认使用当前 HAR 抓包值。
 
-3. JDJR_RMZHISHU_GROWTH_EID
+2. JDJR_RMZHISHU_GROWTH_EID
    含义：prReceiveAwardBatch 风控参数中的 eid。
    是否必须：否，默认优先使用 gias 动态生成的 equipmentId。
 
-4. JDJR_RMZHISHU_GROWTH_JS_TOKEN
-   含义：prReceiveAwardBatch 风控参数中的 jsToken。
-   是否必须：否，默认留空以对齐 HAR；如需覆盖可手工设置。
+3. JDJR_RMZHISHU_GROWTH_EQUIPMENT_ID
+   含义：热门指数页风控设备标识，会同时写入 3AB9D23F7A4B3C9B 和 equipmentId。
+   是否必须：仅当 gias 动态生成失败且 JD_COOKIE 中缺少设备标识时必须。
 
-5. JDJR_RMZHISHU_GROWTH_DEBUG
+4. JDJR_RMZHISHU_GROWTH_JS_TOKEN
+   含义：热门指数页风控 jsToken，会写入 3AB9D23F7A4B3CSS。
+   是否必须：否，默认优先使用 gias 动态生成或 JD_COOKIE 现有值。
+
+5. JDJR_RMZHISHU_GROWTH_GIA_D
+   含义：热门指数页风控 _gia_d。
+   是否必须：否，默认值为 1。
+
+6. JDJR_RMZHISHU_GROWTH_DEBUG
    含义：是否打印关键接口原始返回片段，便于排查字段变化。
    是否必须：否，值为 1 时开启。
 */
@@ -77,22 +81,60 @@ function getCookieValue(cookie, key) {
   return match ? decodeURIComponent(match[1]) : '';
 }
 
-function extractRiskContextFromCookie(cookie) {
-  const jsToken = getCookieValue(cookie, '3AB9D23F7A4B3CSS');
-  const equipmentId =
-    getCookieValue(cookie, '3AB9D23F7A4B3C9B') ||
-    getCookieValue(cookie, 'equipmentId');
-  const giaD = getCookieValue(cookie, '_gia_d') || '1';
+function getConfiguredRiskSeed(cookie) {
+  return {
+    jsToken: process.env.JDJR_RMZHISHU_GROWTH_JS_TOKEN || getCookieValue(cookie, '3AB9D23F7A4B3CSS'),
+    equipmentId:
+      process.env.JDJR_RMZHISHU_GROWTH_EQUIPMENT_ID ||
+      getCookieValue(cookie, '3AB9D23F7A4B3C9B') ||
+      getCookieValue(cookie, 'equipmentId'),
+    giaD: process.env.JDJR_RMZHISHU_GROWTH_GIA_D || getCookieValue(cookie, '_gia_d') || '1',
+  };
+}
 
-  if (!equipmentId) {
-    throw new Error('Cookie 中缺少 3AB9D23F7A4B3C9B/equipmentId，无法构建风控上下文');
+function buildRiskCookie(cookie, riskSeed) {
+  return mergeCookieString(cookie, {
+    '3AB9D23F7A4B3CSS': riskSeed.jsToken || '',
+    '3AB9D23F7A4B3C9B': riskSeed.equipmentId || '',
+    equipmentId: riskSeed.equipmentId || '',
+    _gia_d: riskSeed.giaD || '1',
+  });
+}
+
+function ensureRiskSeed(riskSeed) {
+  if (!riskSeed.equipmentId) {
+    throw new Error('缺少设备标识：请补 JDJR_RMZHISHU_GROWTH_EQUIPMENT_ID，或在 JD_COOKIE 中提供 3AB9D23F7A4B3C9B/equipmentId');
   }
 
+  if (!riskSeed.jsToken) {
+    throw new Error('缺少 jsToken：请补 JDJR_RMZHISHU_GROWTH_JS_TOKEN，或在 JD_COOKIE 中提供 3AB9D23F7A4B3CSS');
+  }
+}
+
+function extractRiskContext(cookie) {
+  const riskSeed = getConfiguredRiskSeed(cookie);
+  ensureRiskSeed(riskSeed);
   return {
-    jsToken,
-    equipmentId,
-    giaD,
-    cookie,
+    jsToken: riskSeed.jsToken,
+    equipmentId: riskSeed.equipmentId,
+    giaD: riskSeed.giaD,
+    cookie: buildRiskCookie(cookie, riskSeed),
+  };
+}
+
+function mergeRiskContext(cookie, baseContext = {}) {
+  const configuredRiskSeed = getConfiguredRiskSeed(cookie);
+  const riskSeed = {
+    jsToken: configuredRiskSeed.jsToken || baseContext.jsToken || '',
+    equipmentId: configuredRiskSeed.equipmentId || baseContext.equipmentId || '',
+    giaD: configuredRiskSeed.giaD || baseContext.giaD || '1',
+  };
+  ensureRiskSeed(riskSeed);
+  return {
+    jsToken: riskSeed.jsToken,
+    equipmentId: riskSeed.equipmentId,
+    giaD: riskSeed.giaD,
+    cookie: buildRiskCookie(cookie, riskSeed),
   };
 }
 
@@ -405,22 +447,26 @@ function getTakePrizeResult(response) {
 async function runAccount(index, cookie) {
   const userName = getUserName(cookie);
   const prefix = `账号${index} ${userName}`;
-  const fullCookie = process.env.JDJR_RMZHISHU_GROWTH_FULL_COOKIE || '';
-  const mergedCookie = fullCookie ? mergeCookieString(cookie, fullCookie) : cookie;
   let aar2Context = null;
 
   try {
     console.log(`\n==== ${prefix} ====`);
     let riskContext;
     try {
-      riskContext = await getGiasRiskContext(mergedCookie, {
+      const giasRiskContext = await getGiasRiskContext(cookie, {
         pageUrl: PAGE_URL,
         bizId: 'channel',
         userAgent: DEFAULT_JR_USER_AGENT,
       });
+      riskContext = mergeRiskContext(cookie, giasRiskContext);
     } catch (error) {
-      riskContext = extractRiskContextFromCookie(mergedCookie);
+      riskContext = extractRiskContext(cookie);
       console.log(`${prefix}: gias 获取失败，回退 Cookie 风控态 => ${error.message}`);
+    }
+    if (isDebugEnabled()) {
+      console.log(
+        `${prefix}: 风控上下文 => equipmentId=${riskContext.equipmentId.slice(0, 16)}... | jsToken=${riskContext.jsToken.slice(0, 20)}...`,
+      );
     }
     aar2Context = await createAar2Context();
 
