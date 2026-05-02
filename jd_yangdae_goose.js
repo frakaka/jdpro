@@ -1277,6 +1277,7 @@ async function handleMissions(cookie, aar2Context, chromeRuntime) {
 
       await sleep(TASK_INTERVAL_MS);
       let result = await doMission(cookie, aar2Context, browseMission);
+      currentMissions = await fetchMissionList(cookie, aar2Context).catch(() => currentMissions);
       if (result.opResult !== 0) {
         const busySuffix = isTaskBusyResult(result) ? '，继续下一个任务' : '';
         messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${result.resultMsg || browseMission.buttonText || stringifySnippet(result, 200)}${busySuffix}`);
@@ -1285,10 +1286,10 @@ async function handleMissions(cookie, aar2Context, chromeRuntime) {
 
       if (Number(result.status) === 3) {
         await sleep(TASK_INTERVAL_MS);
-        currentMissions = await fetchMissionList(cookie, aar2Context).catch(() => currentMissions);
         const refreshedMission = findMissionByIdentity(currentMissions, browseMission);
         if (refreshedMission && canClaimMission(refreshedMission)) {
           result = await doMission(cookie, aar2Context, refreshedMission);
+          currentMissions = await fetchMissionList(cookie, aar2Context).catch(() => currentMissions);
         }
       }
 
