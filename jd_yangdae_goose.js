@@ -96,6 +96,7 @@ const cookies = Object.values(jdCookieNode).filter(Boolean);
 
 let jsdomDeps = null;
 let aar2ScriptPromise = null;
+let missionListFetchCount = 0;
 
 $.log('', `🔔${$.name}, 开始!`);
 
@@ -1205,6 +1206,7 @@ async function openMissionPage(cookie, mission, chromeRuntime, aar2Context) {
 }
 
 async function fetchMissionList(cookie, aar2Context) {
+  missionListFetchCount += 1;
   const missionList = await postJsonApi(
     cookie,
     'missionList',
@@ -1216,7 +1218,9 @@ async function fetchMissionList(cookie, aar2Context) {
     }),
     { sign: true, aar2Context },
   );
-  return Array.isArray(missionList.missions) ? missionList.missions : [];
+  const missions = Array.isArray(missionList.missions) ? missionList.missions : [];
+  $.log(`第${missionListFetchCount}次拉取任务列表`, formatMissionList(missions));
+  return missions;
 }
 
 function findMissionByIdentity(missions, mission) {
