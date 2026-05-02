@@ -1011,6 +1011,21 @@ function isTaskBusyResult(result) {
   return String(result?.resultMsg || result?.message || '').includes('活动火爆');
 }
 
+function formatMissionList(missions) {
+  if (!Array.isArray(missions) || !missions.length) {
+    return '任务列表: 空';
+  }
+
+  const items = missions.map((mission, index) => {
+    const missionUrl = String(mission?.url || '').trim();
+    return `${index + 1}.${mission.missionName || mission.gid || '未知任务'}`
+      + `[status=${mission.status ?? '-'},operate=${mission.operate ?? '-'},button=${mission.buttonText || '-'}]`
+      + (missionUrl ? ` ${missionUrl}` : '');
+  });
+
+  return `任务列表: ${items.join(' | ')}`;
+}
+
 async function openMissionPage(cookie, mission, chromeRuntime, aar2Context) {
   const missionUrl = String(mission.url || '').trim();
   if (!missionUrl.startsWith('http')) {
@@ -1205,7 +1220,7 @@ function findMissionByIdentity(missions, mission) {
 
 async function handleMissions(cookie, aar2Context, chromeRuntime) {
   const missions = await fetchMissionList(cookie, aar2Context);
-  const messages = [];
+  const messages = [formatMissionList(missions)];
 
   const claimableMissions = missions.filter(canClaimMission);
   for (const mission of claimableMissions) {
