@@ -83,6 +83,7 @@ const CHANNEL_LV = 'btkp';
 const SOURCE = 2;
 const EXTRA_COOKIE_ENV = 'JD_YANGDAE_EXTRA_COOKIE';
 const TASK_INTERVAL_MS = 3000;
+const MAX_BROWSE_ATTEMPTS_PER_MISSION = 2;
 const DEFAULT_SGM_PID = '9HwAEg@vlKkp7SqT8dSSBaj';
 const INSURANCE_CHANNEL_REPLAY_BODY = 'ClL0xgU/qnJc9T+6xCaURocHwhY4EErvW7Uvt3T8w5kA1g7tpBaoKUMIsmYWH2mIc/6KguABM01xOSWIgNuxSjs+g85FaF4kIMbLrZXwRvMA4gSHlaH3VUdQ6S+J/DKxp2YNHQ2t1Sp2RQG/WpOOQGkczunXjaVWH6AiT4G6UmQ=';
 const DEFAULT_CHROME_CANDIDATES = [
@@ -1235,7 +1236,8 @@ async function handleMissions(cookie, aar2Context, chromeRuntime) {
   let currentMissions = await fetchMissionList(cookie, aar2Context);
   const messages = [formatMissionList(currentMissions)];
   const processedClaimMissionIds = new Set();
-  const processedBrowseMissionIds = new Set();
+  const browseMissionAttemptCounts = new Map();
+  let browseMissionRunCount = 0;
 
   while (true) {
     const claimableMission = currentMissions.find((mission) => (
@@ -1262,15 +1264,21 @@ async function handleMissions(cookie, aar2Context, chromeRuntime) {
     }
   }
 
-  while (processedBrowseMissionIds.size < getTaskLimit()) {
+  while (browseMissionRunCount < getTaskLimit()) {
     const browseMission = currentMissions.find((mission) => (
-      canBrowseMission(mission) && !processedBrowseMissionIds.has(getMissionIdentity(mission))
+      canBrowseMission(mission)
+      && (browseMissionAttemptCounts.get(getMissionIdentity(mission)) || 0) < MAX_BROWSE_ATTEMPTS_PER_MISSION
     ));
     if (!browseMission) {
       break;
     }
 
-    processedBrowseMissionIds.add(getMissionIdentity(browseMission));
+    const browseMissionId = getMissionIdentity(browseMission);
+    browseMissionAttemptCounts.set(
+      browseMissionId,
+      (browseMissionAttemptCounts.get(browseMissionId) || 0) + 1,
+    );
+    browseMissionRunCount += 1;
     try {
       const visitResult = await openMissionPage(cookie, browseMission, chromeRuntime, aar2Context);
       if (!visitResult.success) {
