@@ -1273,6 +1273,7 @@ async function handleMissions(cookie, aar2Context, chromeRuntime) {
         messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${visitResult.message}`);
         continue;
       }
+      messages.push(`任务 ${browseMission.missionName || browseMission.gid}: ${visitResult.message}`);
 
       await sleep(TASK_INTERVAL_MS);
       let result = await doMission(cookie, aar2Context, browseMission);
