@@ -306,6 +306,8 @@ async function launchChrome() {
     '--disable-default-apps',
     '--disable-extensions',
     '--mute-audio',
+    '--ignore-certificate-errors',
+    '--disable-features=AsyncDns',
     `--remote-debugging-address=${CHROME_DEBUG_HOST}`,
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${userDataDir}`,
