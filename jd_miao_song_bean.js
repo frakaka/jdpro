@@ -2,58 +2,52 @@
 cron:9 0 * * * jd_miao_song_bean.js
 
 环境变量说明：
-1. JD_MIAO_SONG_FULL_COOKIE
-   含义：秒送/笔笔返页面完整 Cookie，优先用于活动接口，补齐 sdtoken、qid、joyytokem 等页面态。
-   是否必须：否，默认使用 JD_COOKIE。
-
-2. JD_MIAO_SONG_TASK_LIMIT
+1. JD_MIAO_SONG_TASK_LIMIT
    含义：单次最多执行多少个京豆任务。
    是否必须：否，默认不限制。
 
-3. JD_MIAO_SONG_BROWSE_WAIT_MS
+2. JD_MIAO_SONG_BROWSE_WAIT_MS
    含义：任务页停留时长，单位毫秒。
    是否必须：否，默认 10000。
 
-4. JD_MIAO_SONG_DEBUG
-   含义：是否打印原始请求和响应片段。
+3. JD_MIAO_SONG_DEBUG
+   含义：是否打印关键接口的 request/response。
    是否必须：否，值为 1 时开启。
+
+4. JD_MIAO_SONG_LATITUDE / JD_MIAO_SONG_LONGITUDE / JD_MIAO_SONG_CHANNEL_ID
+   含义：秒送签到接口定位与渠道参数。
+   是否必须：否，默认使用抓包里的长沙/rn07。
 */
 
 'use strict';
 
-const Module = require('module');
 const got = require('got');
 const jdCookieNode = require('./jdCookie.js');
 const {
   Env,
-  DEFAULT_JR_USER_AGENT,
+  DEFAULT_USER_AGENT,
   buildHeaders,
-  getGiasRiskContext,
+  getRequestUuid,
+  getUserAgent,
   getUserName,
-  mergeCookieString,
   safeJsonParse,
   sleep,
   stringifySnippet,
 } = require('./function/jdHarBeanCommon');
 
-const $ = new Env('秒送做任务领京豆');
+const $ = new Env('秒送签到做任务领京豆');
 const cookies = Object.values(jdCookieNode).filter(Boolean);
 
-const USER_AGENT = DEFAULT_JR_USER_AGENT;
+const API_ENDPOINT = 'https://api.m.jd.com/api';
+const PAGE_URL = 'https://laputa.jd.com/ltbdf232aa/pages/index/index?channelId=rn07';
+const PAGE_ORIGIN = 'https://laputa.jd.com';
+const APPID = 'laputa';
+const CLIENT = 'wh5';
+const CLIENT_VERSION = '1.0.0';
+const OS_VERSION = '1.0.0';
 const REQUEST_TIMEOUT_MS = 15000;
-const PUBLIC_KEY_URL = 'https://ms.jr.jd.com/gw/generic/getRSAPublicKey';
-const CRYPTICO_URL = 'https://libs.jd.com/vendors/jrsecstatic.jdpay.com/jr-sec-dev-static/cryptico.min.js';
-const PAGE_URL = 'https://ipay.jd.com/';
-const PAGE_ORIGIN = 'https://ipay.jd.com';
-
-const QUERY_BUBBLE_URL = 'https://ms.jr.jd.com/gw2/generic/activFront/newh5/m/queryBubbleRebateZone';
-const RECEIVE_PRIZE_URL = 'https://ms.jr.jd.com/gw2/generic/activFront/newh5/m/receiveOrderRebateZoneTakePrize';
-const QUERY_MISSION_URL = 'https://ms.jr.jd.com/gw2/generic/activFront/newh5/m/queryOrderRebateZoneMissionList';
-const TAKE_MISSION_URL = 'https://ms.jr.jd.com/gw2/generic/activFront/newh5/m/takeOrderRebateZoneMission';
-const QUERY_POP_URL = 'https://ms.jr.jd.com/gw2/generic/activFront/newh5/m/queryPop';
-
-let crypticoApiPromise = null;
-let rsaPublicKeyPromise = null;
+const CHANNEL_ID = process.env.JD_MIAO_SONG_CHANNEL_ID || 'rn07';
+const USER_AGENT = getUserAgent(DEFAULT_USER_AGENT);
 
 $.log('', `🔔${$.name}, 开始!`);
 
@@ -65,7 +59,7 @@ function debugLog(accountLabel, title, value) {
   if (!isDebugEnabled()) {
     return;
   }
-  console.log(`${accountLabel}: ${title} => ${stringifySnippet(value, 2000)}`);
+  console.log(`${accountLabel}: ${title} => ${stringifySnippet(value, 3000)}`);
 }
 
 function getCookieValue(cookie, key) {
@@ -73,9 +67,13 @@ function getCookieValue(cookie, key) {
   return match ? decodeURIComponent(match[1]) : '';
 }
 
+function getLaputaUuid(cookie) {
+  return getCookieValue(cookie, '__jda') || getRequestUuid(cookie);
+}
+
 function getBrowseWaitMs() {
   const raw = Number(process.env.JD_MIAO_SONG_BROWSE_WAIT_MS || 10000);
-  return Number.isFinite(raw) && raw > 0 ? raw : 10000;
+  return Number.isFinite(raw) && raw >= 0 ? raw : 10000;
 }
 
 function getTaskLimit() {
@@ -87,422 +85,337 @@ function getTaskLimit() {
   return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
 }
 
-function buildActivityCookie(baseCookie) {
-  const fullCookie = process.env.JD_MIAO_SONG_FULL_COOKIE || '';
-  if (fullCookie) {
-    return mergeCookieString(baseCookie, fullCookie);
-  }
-  return baseCookie;
-}
-
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
-function getRewardText(item) {
-  const rewardFields = [
-    item?.rewardDesc,
-    item?.rewardName,
-    item?.awardName,
-    item?.showRewardDesc,
-    item?.desc,
-  ].filter(Boolean);
+function buildLocationBody(extra = {}) {
+  return {
+    latitude: process.env.JD_MIAO_SONG_LATITUDE || '28.210319',
+    longitude: process.env.JD_MIAO_SONG_LONGITUDE || '113.03702',
+    provinceId: Number(process.env.JD_MIAO_SONG_PROVINCE_ID || 18),
+    cityId: process.env.JD_MIAO_SONG_CITY_ID || '',
+    countyId: process.env.JD_MIAO_SONG_COUNTY_ID || '',
+    townId: process.env.JD_MIAO_SONG_TOWN_ID || '',
+    addressId: process.env.JD_MIAO_SONG_ADDRESS_ID || '',
+    jdAddressId: process.env.JD_MIAO_SONG_JD_ADDRESS_ID || '',
+    addressDetail: process.env.JD_MIAO_SONG_ADDRESS_DETAIL || '万科·金域蓝湾二期-5号楼A座1802',
+    fullAddress: process.env.JD_MIAO_SONG_FULL_ADDRESS || '湖南长沙市芙蓉区马王堆街道万科·金域蓝湾二期-5号楼A座1802',
+    provinceName: process.env.JD_MIAO_SONG_PROVINCE_NAME || '',
+    cityName: process.env.JD_MIAO_SONG_CITY_NAME || '长沙市',
+    countyName: process.env.JD_MIAO_SONG_COUNTY_NAME || '芙蓉区',
+    townName: process.env.JD_MIAO_SONG_TOWN_NAME || '',
+    channelId: CHANNEL_ID,
+    svcType: true,
+    ...extra,
+  };
+}
 
-  if (rewardFields.length) {
-    return rewardFields.join(' | ');
+function parseApiBody(response) {
+  const parsed = safeJsonParse(response.body || '', null);
+  if (parsed !== null) {
+    return parsed;
   }
-
-  const rewardList = [
-    ...normalizeArray(item?.rewardList),
-    ...normalizeArray(item?.awardList),
-    ...normalizeArray(item?.benefitList),
-  ];
-
-  const parts = rewardList
-    .map((reward) => reward?.name || reward?.awardName || reward?.rewardName || reward?.desc || '')
-    .filter(Boolean);
-
-  return parts.join(' | ');
+  return {
+    code: `HTTP_${response.statusCode}`,
+    msg: response.body || '',
+  };
 }
 
-function isJingdouMission(item) {
-  if (!item || typeof item !== 'object') {
-    return false;
-  }
+async function callLaputaApi(cookie, functionId, body, accountLabel, options = {}) {
+  const form = new URLSearchParams();
+  form.set('body', JSON.stringify(body || {}));
+  form.set('appid', options.appid || APPID);
+  form.set('functionId', functionId);
+  form.set('client', CLIENT);
+  form.set('clientVersion', CLIENT_VERSION);
+  form.set('osVersion', OS_VERSION);
+  form.set('uuid', getLaputaUuid(cookie));
 
-  const text = [
-    item?.name,
-    item?.title,
-    item?.detail,
-    item?.subTitle,
-    item?.desc,
-    getRewardText(item),
-  ]
-    .filter(Boolean)
-    .join(' | ');
+  const url = `${API_ENDPOINT}?functionId=${encodeURIComponent(functionId)}`;
+  debugLog(accountLabel, `请求 ${functionId}`, Object.fromEntries(form.entries()));
 
-  if (String(item.taskType || '') === 'JINGDOU') {
-    return true;
-  }
+  const response = await got.post(url, {
+    body: form.toString(),
+    headers: buildHeaders(cookie, {
+      origin: PAGE_ORIGIN,
+      referer: PAGE_ORIGIN + '/',
+      userAgent: USER_AGENT,
+      contentType: 'application/x-www-form-urlencoded',
+      extraHeaders: {
+        Accept: '*/*',
+      },
+    }),
+    throwHttpErrors: false,
+    timeout: {
+      request: REQUEST_TIMEOUT_MS,
+    },
+  });
 
-  return text.includes('京豆');
-}
+  const parsed = parseApiBody(response);
+  debugLog(accountLabel, `响应 ${functionId} HTTP ${response.statusCode}`, parsed);
 
-function isMissionPending(item) {
-  const status = Number(item?.status);
-  return status === -1 || status === 0;
-}
-
-function buildMissionSummary(item) {
-  return [
-    item?.name || item?.title || '未知任务',
-    `missionId=${item?.missionId || '-'}`,
-    `status=${item?.status ?? '-'}`,
-    `reward=${getRewardText(item) || '-'}`,
-  ].join(' | ');
-}
-
-function buildBubbleSummary(item) {
-  return [
-    `bubbleType=${item?.bubbleType || '-'}`,
-    `todayCanTake=${item?.todayCanTake ? 1 : 0}`,
-    `reward=${getRewardText(item) || '-'}`,
-  ].join(' | ');
-}
-
-function parseMaybeJson(content) {
-  const parsed = safeJsonParse(content, content);
-  if (typeof parsed === 'string') {
-    return safeJsonParse(parsed, parsed);
+  if (response.statusCode >= 400) {
+    throw new Error(`HTTP ${response.statusCode}: ${stringifySnippet(parsed, 500)}`);
   }
   return parsed;
 }
 
-async function getCrypticoApi() {
-  if (!crypticoApiPromise) {
-    crypticoApiPromise = got
-      .get(CRYPTICO_URL, {
-        timeout: {
-          request: REQUEST_TIMEOUT_MS,
-        },
-      })
-      .text()
-      .then((scriptContent) => {
-        const localStorageStore = new Map();
-        const documentObject = {};
-
-        Object.defineProperty(documentObject, 'cookie', {
-          get() {
-            return '';
-          },
-          set() {
-            return true;
-          },
-        });
-
-        const loadCryptico = new Function(
-          'localStorageStore',
-          'documentObject',
-          `var window=this;var self=window;var globalThis=window;var global=window;var navigator={userAgent:${JSON.stringify(USER_AGENT)},appName:"Netscape",appVersion:"5"};var localStorage={getItem:function(key){return localStorageStore.has(key)?localStorageStore.get(key):null;},setItem:function(key,value){localStorageStore.set(key,String(value));},removeItem:function(key){localStorageStore.delete(key);}};var document=documentObject;var aesjs=null;${scriptContent};aesjs=window.aesjs||globalThis.aesjs||aesjs;return cryptico;`,
-        );
-        return loadCryptico.call({}, localStorageStore, documentObject);
-      });
-  }
-
-  return crypticoApiPromise;
-}
-
-async function getRsaPublicKey() {
-  if (!rsaPublicKeyPromise) {
-    rsaPublicKeyPromise = got
-      .get(PUBLIC_KEY_URL, {
-        headers: {
-          Accept: 'application/json, text/plain, */*',
-          Referer: PAGE_URL,
-          Origin: PAGE_ORIGIN,
-          'User-Agent': USER_AGENT,
-        },
-        timeout: {
-          request: REQUEST_TIMEOUT_MS,
-        },
-      })
-      .json()
-      .then((response) => {
-        const rawPublicKey = response?.resultData?.publicKey;
-        if (!rawPublicKey) {
-          throw new Error(`未获取到秒送活动公钥: ${stringifySnippet(response, 300)}`);
-        }
-        return JSON.parse(rawPublicKey);
-      });
-  }
-
-  return rsaPublicKeyPromise;
-}
-
-async function createRequestCryptico() {
-  const [cryptico, publicKey] = await Promise.all([getCrypticoApi(), getRsaPublicKey()]);
-  cryptico.setPublicKeyString(JSON.stringify(publicKey));
-  return cryptico;
-}
-
-async function createRiskContext(cookie, accountLabel) {
-  try {
-    const riskContext = await getGiasRiskContext(cookie, {
-      pageUrl: PAGE_URL,
-      bizId: 'activFront',
+async function openPage(cookie, accountLabel, url = PAGE_URL) {
+  const response = await got.get(url, {
+    headers: buildHeaders(cookie, {
+      origin: PAGE_ORIGIN,
+      referer: PAGE_ORIGIN + '/',
       userAgent: USER_AGENT,
-    });
-    return {
-      jsToken: riskContext.jsToken || '',
-      equipmentId: riskContext.equipmentId || '',
-      cookie: riskContext.cookie || cookie,
-      source: 'gias',
-    };
-  } catch (error) {
-    console.log(`${accountLabel}: gias 获取失败，回退 Cookie 风控态 => ${error.message}`);
-    const jsToken = getCookieValue(cookie, '3AB9D23F7A4B3CSS') || '';
-    const equipmentId = getCookieValue(cookie, '3AB9D23F7A4B3C9B') || '';
-    return {
-      jsToken,
-      equipmentId,
-      cookie,
-      source: 'cookie',
-    };
-  }
-}
-
-function buildDeviceInfoVo(riskContext) {
-  return {
-    appType: 6,
-    jsToken: riskContext.jsToken || '',
-    eid: riskContext.jsToken || '',
-    eidToken: riskContext.jsToken || '',
-    equipmentId: riskContext.equipmentId || '',
-  };
-}
-
-async function callActivFrontApi(url, cookie, riskContext, plainParams, accountLabel) {
-  const cryptico = await createRequestCryptico();
-  const params = {
-    ...plainParams,
-    deviceInfoVo: buildDeviceInfoVo(riskContext),
-  };
-
-  const encrypted = cryptico.encryptData(JSON.stringify(params));
-  const cipherText = encrypted?.cipher || encrypted?.ciphertext || '';
-  if (!encrypted?.status || !cipherText) {
-    throw new Error(`bodyEncrypt 生成失败: ${JSON.stringify(encrypted)}`);
-  }
-
-  const requestBody = {
-    channelEncrypt: 1,
-    bodyEncrypt: cipherText,
-    cco: JSON.stringify({
-      clientVersion: '1.0.0',
-      client: 'h5',
-      t: Date.now(),
-      h5st: null,
-      _stk: null,
+      contentType: '',
+      extraHeaders: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
     }),
-    eidToken: riskContext.jsToken || '',
+    throwHttpErrors: false,
+    timeout: {
+      request: REQUEST_TIMEOUT_MS,
+    },
+  });
+
+  debugLog(accountLabel, `打开页面 HTTP ${response.statusCode}`, url);
+  return response.statusCode < 400;
+}
+
+async function queryFloorList(cookie, accountLabel) {
+  return callLaputaApi(
+    cookie,
+    'jdh_laputa_queryFloorList3',
+    {
+      osName: 'ltbdf232aa',
+      version: 1,
+      functionId: 'index',
+    },
+    accountLabel,
+  );
+}
+
+async function queryWelfareIndex(cookie, accountLabel) {
+  return callLaputaApi(cookie, 'ds_api_ms_welfareCenterQueryIndex', buildLocationBody(), accountLabel);
+}
+
+async function queryCouponInfo(cookie, accountLabel) {
+  return callLaputaApi(
+    cookie,
+    'ds_signIn_querySignInCouponInfo',
+    buildLocationBody({ tipCouponKey: '' }),
+    accountLabel,
+  );
+}
+
+async function queryJingBean(cookie, accountLabel) {
+  return callLaputaApi(cookie, 'ds_signIn_api_querySignInJingBean', buildLocationBody(), accountLabel);
+}
+
+async function signInGetRewards(cookie, accountLabel) {
+  return callLaputaApi(cookie, 'ds_signIn_signInGetRewards', buildLocationBody(), accountLabel);
+}
+
+async function doInteractiveAssignment(cookie, task, item, accountLabel) {
+  const body = {
+    encryptAssignmentId: task.encryptAssignmentId,
+    itemId: item.itemId,
+    assignmentType: Number(task.assignmentType || 1),
+    actionType: 1,
+    waitDuration: Number(task.waitDuration || 0),
   };
+  return callLaputaApi(cookie, 'ds_signIn_api_doInteractiveAssignment', body, accountLabel);
+}
 
-  debugLog(accountLabel, `请求 ${url}`, requestBody);
+function isSuccessCode(response) {
+  return response?.code === '0000' || response?.code === 0 || response?.success === true;
+}
 
-  const response = await got.post(url, {
-    body: JSON.stringify(requestBody),
+function getModuleData(indexResponse, businessId) {
+  const modules = normalizeArray(indexResponse?.data?.modules);
+  return modules.find((module) => Number(module?.businessId) === Number(businessId))?.data || {};
+}
+
+function getSignModule(indexResponse) {
+  return getModuleData(indexResponse, 2026040101);
+}
+
+function hasSignModule(signModule) {
+  return Boolean(
+    signModule
+      && typeof signModule.needSignIn === 'boolean',
+  );
+}
+
+function getTaskList(indexResponse) {
+  const taskModule = getModuleData(indexResponse, 2026040104);
+  return normalizeArray(taskModule?.taskDetailResVOList);
+}
+
+function getRewardText(task) {
+  return normalizeArray(task?.rewardVOList)
+    .map((reward) => reward?.rewardDesc || reward?.rewardName || reward?.rewardValue || '')
+    .filter(Boolean)
+    .join(' | ');
+}
+
+function getTaskItem(task) {
+  return normalizeArray(task?.taskExtVOList).find((item) => item?.itemId) || null;
+}
+
+function buildTaskSummary(task) {
+  const item = getTaskItem(task);
+  return [
+    task?.assignmentName || '未知任务',
+    `type=${task?.assignmentType ?? '-'}`,
+    `itemId=${item?.itemId || '-'}`,
+    `status=${item?.status ?? '-'}`,
+    `completion=${task?.completionCnt ?? 0}/${task?.assignmentTimesLimit ?? 1}`,
+    `done=${task?.completionFlag ? 1 : 0}`,
+    `wait=${task?.waitDuration ?? 0}`,
+    `reward=${getRewardText(task) || '-'}`,
+  ].join(' | ');
+}
+
+function isExecutableTask(task) {
+  if (!task?.encryptAssignmentId || Number(task.assignmentType) !== 1) {
+    return false;
+  }
+  if (task.completionFlag || Number(task.completionCnt || 0) >= Number(task.assignmentTimesLimit || 1)) {
+    return false;
+  }
+  const item = getTaskItem(task);
+  return Boolean(item?.itemId);
+}
+
+function getWaitAfterTask(task) {
+  const taskWaitMs = Number(task?.waitDuration || 0) * 1000;
+  return Math.max(getBrowseWaitMs(), Number.isFinite(taskWaitMs) ? taskWaitMs : 0);
+}
+
+async function browseTaskPage(cookie, task, accountLabel) {
+  const item = getTaskItem(task);
+  const url = item?.url || '';
+  if (!/^https?:\/\//i.test(url)) {
+    console.log(`${accountLabel}: 任务无 H5 链接，跳过浏览 => ${task?.assignmentName || '未知任务'}`);
+    return;
+  }
+
+  const response = await got.get(url, {
     headers: buildHeaders(cookie, {
       origin: PAGE_ORIGIN,
       referer: PAGE_URL,
       userAgent: USER_AGENT,
-      contentType: 'application/json;charset=UTF-8',
+      contentType: '',
+      extraHeaders: {
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
     }),
     throwHttpErrors: false,
     timeout: {
       request: REQUEST_TIMEOUT_MS,
     },
   });
-
-  const parsed = safeJsonParse(response.body, {});
-  debugLog(accountLabel, `响应 ${url}`, parsed);
-
-  if (response.statusCode >= 400) {
-    throw new Error(`HTTP ${response.statusCode}: ${stringifySnippet(parsed, 300)}`);
-  }
-
-  if (!parsed || parsed.success === false || (parsed.resultCode !== undefined && Number(parsed.resultCode) !== 0)) {
-    const message = parsed?.resultMsg || parsed?.message || '接口返回失败';
-    throw new Error(`${message}: ${stringifySnippet(parsed, 300)}`);
-  }
-
-  let data = parsed.resultData;
-  if (parsed.channelEncrypt && typeof data === 'string') {
-    const decrypted = cryptico.decryptData(data);
-    if (!decrypted?.status || !decrypted?.plaintext) {
-      throw new Error(`响应解密失败: ${stringifySnippet(decrypted, 300)}`);
-    }
-    data = parseMaybeJson(decrypted.plaintext);
-  }
-
-  if (typeof data === 'string') {
-    data = parseMaybeJson(data);
-  }
-
-  return {
-    raw: parsed,
-    data,
-  };
+  console.log(`${accountLabel}: 浏览任务页 => ${task.assignmentName} | HTTP ${response.statusCode} | ${url}`);
 }
 
-async function queryBubbleList(cookie, riskContext, accountLabel) {
-  const response = await callActivFrontApi(QUERY_BUBBLE_URL, cookie, riskContext, {}, accountLabel);
-  return normalizeArray(response?.data?.data || response?.data);
-}
-
-async function receiveBubblePrize(cookie, riskContext, bubble, accountLabel) {
-  const params = {
-    bubbleShow: {
-      bubbleType: bubble?.bubbleType || '',
-      bubbleDtoList: normalizeArray(bubble?.bubbleDtoList),
-    },
-  };
-  return callActivFrontApi(RECEIVE_PRIZE_URL, cookie, riskContext, params, accountLabel);
-}
-
-async function queryMissionList(cookie, riskContext, taskType, accountLabel) {
-  const response = await callActivFrontApi(
-    QUERY_MISSION_URL,
-    cookie,
-    riskContext,
-    { taskType: taskType || 'ALL' },
-    accountLabel,
-  );
-  const payload = response?.data?.data || response?.data || {};
-  return {
-    missionList: normalizeArray(payload?.missionList),
-    defaultMission: payload?.defaultMission || null,
-    raw: payload,
-  };
-}
-
-async function takeMission(cookie, riskContext, mission, accountLabel) {
-  const params = {
-    type: 'RECEIVE_MISSION',
-    takeParam: {
-      ...(mission?.takeParam || {}),
-      taskSource: mission?.taskSource || 'taskFloor',
-    },
-  };
-  return callActivFrontApi(TAKE_MISSION_URL, cookie, riskContext, params, accountLabel);
-}
-
-async function queryPop(cookie, riskContext, accountLabel) {
-  try {
-    const response = await callActivFrontApi(QUERY_POP_URL, cookie, riskContext, {}, accountLabel);
-    return response?.data || {};
-  } catch (error) {
-    debugLog(accountLabel, 'queryPop 失败', error.message);
-    return {};
-  }
-}
-
-async function openTaskPage(mission, accountLabel) {
-  const doLink = mission?.doLink || mission?.jumpUrl || '';
-  if (!/^https?:\/\//i.test(doLink)) {
-    console.log(`${accountLabel}: 任务跳转非 H5，跳过实际浏览 => ${doLink || '-'}`);
-    return false;
-  }
-
-  const response = await got.get(doLink, {
-    headers: {
-      Referer: PAGE_URL,
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh-Hans;q=0.9',
-    },
-    throwHttpErrors: false,
-    timeout: {
-      request: REQUEST_TIMEOUT_MS,
-    },
-  });
-
-  console.log(`${accountLabel}: 打开任务页 => ${doLink} | status=${response.statusCode}`);
-  return response.statusCode < 400;
-}
-
-async function handleBubbles(cookie, riskContext, accountLabel) {
-  const bubbleList = await queryBubbleList(cookie, riskContext, accountLabel);
-  const jingdouBubbles = bubbleList.filter((item) => item?.todayCanTake && getRewardText(item).includes('京豆'));
-
-  if (!jingdouBubbles.length) {
-    console.log(`${accountLabel}: 可领奖励气泡 => 0`);
+async function handleSignIn(cookie, accountLabel, indexResponse) {
+  const signModule = getSignModule(indexResponse);
+  if (!hasSignModule(signModule)) {
+    console.log(`${accountLabel}: 未识别到签到模块，跳过签到`);
     return;
   }
 
-  console.log(`${accountLabel}: 可领奖励气泡 => ${jingdouBubbles.length}`);
-  for (const bubble of jingdouBubbles) {
-    console.log(`${accountLabel}: 尝试领奖气泡 => ${buildBubbleSummary(bubble)}`);
-    try {
-      const result = await receiveBubblePrize(cookie, riskContext, bubble, accountLabel);
-      console.log(`${accountLabel}: 气泡领奖结果 => ${stringifySnippet(result?.data || result?.raw || {}, 500)}`);
-    } catch (error) {
-      console.log(`${accountLabel}: 气泡领奖失败 => ${error.message}`);
-    }
+  const beforeBean = await queryJingBean(cookie, accountLabel);
+  const beforeBeanNum = Number(beforeBean?.data?.beanNum || 0);
+
+  console.log(
+    `${accountLabel}: 初始签到状态 => needSignIn=${signModule?.needSignIn}, signInNum=${signModule?.signInPeriodDetailResVO?.signInNum ?? '-'}, beanNum=${beforeBeanNum || '-'}`,
+  );
+
+  if (signModule?.needSignIn === false) {
+    console.log(`${accountLabel}: 今日已签到，跳过签到动作`);
+    return;
+  }
+
+  await queryCouponInfo(cookie, accountLabel);
+  const signResult = await signInGetRewards(cookie, accountLabel);
+  const rewardText = signResult?.data?.rewardText || signResult?.msg || stringifySnippet(signResult, 300);
+  console.log(`${accountLabel}: 签到结果 => ${rewardText}`);
+
+  const afterBean = await queryJingBean(cookie, accountLabel);
+  const afterBeanNum = Number(afterBean?.data?.beanNum || 0);
+  if (afterBeanNum || beforeBeanNum) {
+    console.log(`${accountLabel}: 京豆余额 => ${beforeBeanNum || '-'} -> ${afterBeanNum || '-'}`);
   }
 }
 
-async function handleMissions(cookie, riskContext, accountLabel) {
-  const taskLimit = getTaskLimit();
-  const missionState = await queryMissionList(cookie, riskContext, 'ALL', accountLabel);
-  const jingdouMissionList = missionState.missionList.filter(isJingdouMission);
-  const pendingMissionList = jingdouMissionList.filter(isMissionPending).slice(0, taskLimit);
+async function refreshTaskList(cookie, accountLabel) {
+  const indexResponse = await queryWelfareIndex(cookie, accountLabel);
+  const taskList = getTaskList(indexResponse);
+  console.log(`${accountLabel}: 拉取任务列表 => ${taskList.length} 个`);
+  if (taskList.length) {
+    console.log(`${accountLabel}: 任务列表 => ${taskList.map(buildTaskSummary).join(' || ')}`);
+  }
+  return taskList;
+}
 
-  const rewardSummary = jingdouMissionList.length
-    ? jingdouMissionList.map(buildMissionSummary).join(' || ')
-    : '未识别到京豆任务';
-  console.log(`${accountLabel}: 京豆任务摘要 => ${rewardSummary}`);
-  console.log(`${accountLabel}: 待执行京豆任务数 => ${pendingMissionList.length}`);
-
+async function handleTasks(cookie, accountLabel) {
+  let taskList = await refreshTaskList(cookie, accountLabel);
   let completedCount = 0;
-  for (const mission of pendingMissionList) {
-    console.log(`${accountLabel}: 尝试任务 => ${buildMissionSummary(mission)}`);
+  const taskLimit = getTaskLimit();
+  const handledTaskIds = new Set();
+
+  while (completedCount < taskLimit) {
+    const task = taskList.find((item) => {
+      const taskKey = `${item?.encryptAssignmentId || ''}:${getTaskItem(item)?.itemId || ''}`;
+      return isExecutableTask(item) && !handledTaskIds.has(taskKey);
+    });
+
+    if (!task) {
+      break;
+    }
+
+    const item = getTaskItem(task);
+    const taskKey = `${task.encryptAssignmentId}:${item.itemId}`;
+    handledTaskIds.add(taskKey);
+
+    console.log(`${accountLabel}: 开始任务 => ${buildTaskSummary(task)}`);
     try {
-      if (mission?.takeParam) {
-        const takeResult = await takeMission(cookie, riskContext, mission, accountLabel);
-        console.log(`${accountLabel}: 接任务结果 => ${stringifySnippet(takeResult?.data || takeResult?.raw || {}, 500)}`);
-      }
+      await browseTaskPage(cookie, task, accountLabel);
+      await sleep(getWaitAfterTask(task));
 
-      await openTaskPage(mission, accountLabel);
-      await sleep(getBrowseWaitMs());
-
-      const refreshed = await queryMissionList(cookie, riskContext, 'ALL', accountLabel);
-      const refreshedMission = refreshed.missionList.find((item) => String(item?.missionId) === String(mission?.missionId));
-      console.log(
-        `${accountLabel}: 任务复查 => ${refreshedMission ? buildMissionSummary(refreshedMission) : `${mission?.name || mission?.title || '未知任务'} 已从任务列表消失`}`,
-      );
-      if (!refreshedMission || Number(refreshedMission?.status) >= 1) {
+      const result = await doInteractiveAssignment(cookie, task, item, accountLabel);
+      console.log(`${accountLabel}: 任务上报结果 => ${stringifySnippet(result, 800)}`);
+      if (isSuccessCode(result) && Number(result?.data?.status || 0) === 1) {
         completedCount += 1;
       }
     } catch (error) {
       console.log(`${accountLabel}: 任务执行失败 => ${error.message}`);
     }
+
+    taskList = await refreshTaskList(cookie, accountLabel);
+    await sleep(1000);
   }
 
-  console.log(`${accountLabel}: 已完成京豆任务数 => ${completedCount}`);
+  console.log(`${accountLabel}: 本次完成任务数 => ${completedCount}`);
 }
 
 async function handleAccount(cookie, index) {
   const accountLabel = `账号${index + 1} ${getUserName(cookie)}`;
-  const activityCookie = buildActivityCookie(cookie);
-  const riskContext = await createRiskContext(activityCookie, accountLabel);
-  const requestCookie = riskContext.cookie || activityCookie;
 
   console.log(`\n==== ${accountLabel} ====`);
-  console.log(`${accountLabel}: 风控态来源 => ${riskContext.source}`);
+  await openPage(cookie, accountLabel);
+  await queryFloorList(cookie, accountLabel);
 
-  await queryPop(requestCookie, riskContext, accountLabel);
-  await handleBubbles(requestCookie, riskContext, accountLabel);
-  await handleMissions(requestCookie, riskContext, accountLabel);
+  const indexResponse = await queryWelfareIndex(cookie, accountLabel);
+  if (!isSuccessCode(indexResponse)) {
+    console.log(`${accountLabel}: 首页模块获取失败 => ${stringifySnippet(indexResponse, 800)}`);
+    return;
+  }
+
+  await handleSignIn(cookie, accountLabel, indexResponse);
+  await handleTasks(cookie, accountLabel);
 }
 
 (async () => {
