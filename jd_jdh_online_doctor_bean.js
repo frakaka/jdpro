@@ -17,6 +17,9 @@ const crypto = require('crypto');
 const Module = require('module');
 const got = require('got');
 const jdCookieNode = require('./jdCookie.js');
+const {
+  createJsSecurityH5st,
+} = require('./function/jdHarBeanCommon');
 const $ = new Env('在线医生福利中心领京豆');
 
 let notify = null;
@@ -36,11 +39,20 @@ const CHANNEL = 'jdhapp';
 const TASK_LIST_APP_ID = 'JDHAPP';
 const DO_TASK_APP_ID = 'JDHAPP';
 const AWARD_APP_ID = 'JDHAPP';
+const AWARD_QUERY_APP_ID = 'laputa';
+const KIT_TASK_APP_ID = 'jdh-middle';
+const KIT_SIGN_APP_ID = 'laputa';
 const DO_TASK_H5ST_APP_ID = '32438';
+const KIT_H5ST_APP_ID = 'f0e57';
 const H5ST_VERSION = '4.1';
+const KIT_H5ST_VERSION = '5.3';
+const KIT_H5ST_MODE = 'js_security';
+const JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/js_security_v3_lite_0.1.5.js';
 const CLIENT = 'wh5';
 const CLIENT_VERSION = '1.0.0';
 const SPECIAL_TASK_ID = '5570368';
+const KIT_GROUP_CODE = 'openkits';
+const KIT_INFO_ID = 'kits';
 const AUTO_TASK_IDS = new Set([
   SPECIAL_TASK_ID,
   '6631109',
@@ -60,7 +72,7 @@ const TASK_STATUS = {
 };
 const RISK_TIMEOUT_MS = 10000;
 const REQUEST_TIMEOUT_MS = 15000;
-const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/application=JDJR-App&clientType=ios&iosType=iphone&clientVersion=8.1.70&HiClVersion=8.1.70&isUpdate=0&osVersion=26.2&osName=iOS&screen=844*390&src=App Store&netWork=1&netWorkType=1&CpayJS=UnionPay/1.0 JDJR';
+const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/application=JDJR-App&clientType=ios&iosType=iphone&clientVersion=8.1.90&HiClVersion=8.1.90&isUpdate=0&osVersion=26.2&osName=iOS&screen=844*390&src=App Store&netWork=1&netWorkType=1&CpayJS=UnionPay/1.0 JDJR&stockSDK=stocksdk-iphone_6.0.0&sPoint=&jdPay=(*#@jdPaySDK*#@jdPayChannel=jdfinance&jdPayChannelVersion=8.1.90&jdPaySdkVersion=4.02.00.00&jdPayClientName=iOS*#@)';
 
 const cookies = Object.values(jdCookieNode).filter(Boolean);
 const riskContextCache = new Map();
@@ -466,7 +478,7 @@ function getH5stFactory() {
   return h5stFactory;
 }
 
-async function createH5st(functionId, body, h5stAppId, requestAppid, cookie) {
+async function createH5st(functionId, body, h5stAppId, requestAppid, cookie, h5stVersion = H5ST_VERSION) {
   const H5ST = getH5stFactory();
   const signer = new H5ST({
     appId: h5stAppId,
@@ -475,12 +487,76 @@ async function createH5st(functionId, body, h5stAppId, requestAppid, cookie) {
     clientVersion: CLIENT_VERSION,
     pin: getUserName(cookie),
     ua: USER_AGENT,
-    version: H5ST_VERSION,
+    version: h5stVersion,
   });
 
   await signer.genAlgo();
   const query = await signer.genUrlParams(functionId, body, true);
   return new URLSearchParams(query).get('h5st') || '';
+}
+
+function createStableFp(cookie, h5stAppId) {
+  const configuredFp = String(process.env.JD_JDH_ONLINE_DOCTOR_H5ST_FP || 'yeeeyennezbivmp1').trim();
+  if (/^[a-z0-9]{16}$/i.test(configuredFp)) {
+    return configuredFp;
+  }
+
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const seed = crypto
+    .createHash('sha256')
+    .update(`${getUserName(cookie)}:${h5stAppId}:jdh-online-doctor`)
+    .digest();
+  let fp = '';
+  for (let index = 0; index < 16; index += 1) {
+    fp += alphabet[seed[index] % alphabet.length];
+  }
+  return fp;
+}
+
+function buildH5stLocalStorageSeed(cookie, h5stAppId) {
+  return {
+    WQ_dy1_vk: JSON.stringify({
+      [KIT_H5ST_VERSION]: {
+        [h5stAppId]: {
+          e: 31536000,
+          v: createStableFp(cookie, h5stAppId),
+          t: Date.now(),
+        },
+      },
+    }),
+  };
+}
+
+async function createRequestH5st(options) {
+  const {
+    functionId,
+    body,
+    h5stAppId,
+    appid,
+    requestCookie,
+    formFields,
+    h5stVersion,
+    h5stMode,
+  } = options;
+
+  if (h5stMode === KIT_H5ST_MODE) {
+    return createJsSecurityH5st({
+      h5stAppId,
+      formFields,
+      cookie: requestCookie,
+      userAgent: USER_AGENT,
+      pageUrl: PAGE_URL,
+      scriptUrl: String(process.env.JD_JDH_ONLINE_DOCTOR_JS_SECURITY_URL || JS_SECURITY_SCRIPT_URL).trim(),
+      bizId: GIAS_BIZ_ID,
+      localStorageSeed: buildH5stLocalStorageSeed(requestCookie, h5stAppId),
+      signerOptions: {
+        preRequest: true,
+        prepareDelayMs: Number(process.env.JD_JDH_ONLINE_DOCTOR_H5ST_DELAY_MS || 800),
+      },
+    });
+  }
+
+  return createH5st(functionId, body, h5stAppId, appid, requestCookie, h5stVersion);
 }
 
 function createApiHeaders(cookie) {
@@ -508,41 +584,87 @@ async function postApi(cookie, options) {
     body,
     riskContext,
     h5stAppId = '',
+    h5stVersion = H5ST_VERSION,
+    h5stMode = '',
   } = options;
   const requestCookie = riskContext?.cookie || cookie;
   const bodyText = JSON.stringify(body || {});
   const form = new URLSearchParams();
   const pageUuid = getRequestUuid(requestCookie);
+  const isJsSecurityH5st = h5stMode === KIT_H5ST_MODE;
 
   appendFormValue(form, 'body', bodyText);
   appendFormValue(form, 'appid', appid);
   appendFormValue(form, 'functionId', functionId);
-  appendFormValue(form, 'client', CLIENT);
-  appendFormValue(form, 'clientVersion', CLIENT_VERSION);
-  appendFormValue(form, 'uuid', pageUuid);
-  appendFormValue(form, 'pageUrl', PAGE_URL);
+  if (!isJsSecurityH5st) {
+    appendFormValue(form, 'client', CLIENT);
+    appendFormValue(form, 'clientVersion', CLIENT_VERSION);
+    appendFormValue(form, 'uuid', pageUuid);
+    appendFormValue(form, 'pageUrl', PAGE_URL);
+  }
 
-  if (riskContext?.jsToken) {
+  if (!isJsSecurityH5st && riskContext?.jsToken) {
     appendFormValue(form, 'x-api-eid-token', riskContext.jsToken);
   }
 
   if (h5stAppId) {
     try {
-      const h5st = await createH5st(functionId, body, h5stAppId, appid, requestCookie);
+      const formFields = isJsSecurityH5st
+        ? {
+          body: bodyText,
+          appid,
+          functionId,
+          client: CLIENT,
+          uuid: pageUuid,
+        }
+        : Object.fromEntries(form.entries());
+      const h5st = await createRequestH5st({
+        functionId,
+        body,
+        h5stAppId,
+        appid,
+        requestCookie,
+        formFields,
+        h5stVersion,
+        h5stMode,
+      });
       appendFormValue(form, 'h5st', h5st);
     } catch (error) {
       $.log(`h5st 生成失败，继续请求：${error.message}`);
     }
   }
 
-  const responseText = await got.post(`${API_URL}?functionId=${encodeURIComponent(functionId)}`, {
+  if (isJsSecurityH5st) {
+    appendFormValue(form, 'client', CLIENT);
+    appendFormValue(form, 'uuid', pageUuid);
+  }
+
+  if (isDebugEnabled()) {
+    const h5st = String(form.get('h5st') || '');
+    $.log(`postApi REQUEST ${functionId} => ${stringifySnippet({
+      appid,
+      body,
+      hasH5st: !!h5st,
+      h5stLength: h5st.length,
+      h5stHead: h5st ? h5st.split(';').slice(0, 6).join(';') : '',
+    }, 1200)}`);
+  }
+
+  const response = await got.post(`${API_URL}?functionId=${encodeURIComponent(functionId)}`, {
     body: form.toString(),
     headers: createApiHeaders(requestCookie),
     throwHttpErrors: false,
     timeout: {
       request: REQUEST_TIMEOUT_MS,
     },
-  }).text();
+  });
+  const responseText = String(response.body || '');
+  if (isDebugEnabled()) {
+    $.log(`postApi RESPONSE ${functionId} => ${stringifySnippet({
+      statusCode: response.statusCode,
+      body: responseText,
+    }, 1200)}`);
+  }
 
   return safeJsonParse(responseText.trim(), responseText.trim());
 }
@@ -602,6 +724,54 @@ async function claimReward(cookie, riskContext, task) {
   });
 }
 
+async function queryAwardBalance(cookie, riskContext) {
+  return postApi(cookie, {
+    functionId: 'jdh_msoa_queryAwardGw',
+    appid: AWARD_QUERY_APP_ID,
+    riskContext,
+    body: {
+      appKey: APP_KEY,
+      activityId: ACTIVITY_ID,
+      channel: CHANNEL,
+      awardType: 2,
+    },
+  });
+}
+
+async function queryKitTask(cookie, riskContext) {
+  return postApi(cookie, {
+    functionId: 'jdh_bm_getKitTask',
+    appid: KIT_TASK_APP_ID,
+    riskContext,
+    h5stAppId: KIT_H5ST_APP_ID,
+    h5stVersion: KIT_H5ST_VERSION,
+    h5stMode: KIT_H5ST_MODE,
+    body: {
+      m_patch_appKey: APP_KEY,
+      groupCode: KIT_GROUP_CODE,
+      channel: CHANNEL,
+    },
+  });
+}
+
+async function doKitSign(cookie, riskContext, kitTask) {
+  return postApi(cookie, {
+    functionId: 'jdh_msoa_doTaskGw',
+    appid: KIT_SIGN_APP_ID,
+    riskContext,
+    h5stAppId: KIT_H5ST_APP_ID,
+    h5stVersion: KIT_H5ST_VERSION,
+    h5stMode: KIT_H5ST_MODE,
+    body: {
+      appKey: kitTask.appKey || APP_KEY,
+      channel: kitTask.channel || CHANNEL,
+      encodeId: kitTask.encodeId,
+      infoId: KIT_INFO_ID,
+      platform: 3,
+    },
+  });
+}
+
 function extractTaskGroups(response) {
   if (Array.isArray(response?.result)) {
     return response.result;
@@ -655,6 +825,34 @@ function extractMessage(response) {
   return stringifySnippet(response, 300);
 }
 
+function stripHtml(value) {
+  return String(value || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractAwardNum(response) {
+  const num = response?.result?.num ?? response?.data?.result?.num ?? response?.data?.num;
+  return Number.isFinite(Number(num)) ? Number(num) : null;
+}
+
+function getKitTask(response) {
+  const kitTask = response?.result || response?.data?.result || response?.data;
+  return kitTask && typeof kitTask === 'object' ? kitTask : null;
+}
+
+function formatKitTask(kitTask) {
+  const continued = stripHtml(kitTask?.kitCenterRightLabel);
+  const center = stripHtml(kitTask?.kitCenterLabel);
+  return [
+    `id=${kitTask?.id || '-'}`,
+    `status=${kitTask?.status ?? '-'}`,
+    continued,
+    center,
+  ].filter(Boolean).join(' | ');
+}
+
 function isQuerySuccess(response) {
   return Number(response?.code) === 0 && Array.isArray(response?.result);
 }
@@ -677,6 +875,33 @@ function isDoTaskSuccess(response) {
     return bizCode === 0 || bizCode === 2;
   }
   return false;
+}
+
+function isKitTaskSuccess(response) {
+  return Number(response?.code) === 0 && !!getKitTask(response)?.encodeId;
+}
+
+function isKitAlreadyDone(kitTask) {
+  return Number(kitTask?.status) === TASK_STATUS.DONE;
+}
+
+function isKitSignSuccess(response) {
+  return isDoTaskSuccess(response);
+}
+
+function extractPrizeMoney(response) {
+  const prizeList = response?.result?.result?.prizeInfovos ||
+    response?.result?.result?.prizeInfovo ||
+    response?.result?.prizeInfovos ||
+    response?.result?.prizeInfovo ||
+    response?.data?.prizeInfovos ||
+    response?.data?.prizeInfovo ||
+    [];
+  const prizes = Array.isArray(prizeList) ? prizeList : [prizeList];
+  return prizes
+    .map((item) => item?.money || item?.moneyStr || item?.prizeName)
+    .filter(Boolean)
+    .join('/');
 }
 
 function canAutoDoTask(task) {
@@ -718,6 +943,67 @@ async function claimTasks(cookie, riskContext, tasks, prefix) {
   return lines;
 }
 
+async function logAwardBalance(cookie, riskContext, prefix, label) {
+  const response = await queryAwardBalance(cookie, riskContext);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: ${label}健康币/京豆余额原始返回 => ${stringifySnippet(response)}`);
+  }
+
+  const num = extractAwardNum(response);
+  if (num === null) {
+    $.log(`${prefix}: ${label}奖励余额查询失败，${extractMessage(response)}`);
+    return null;
+  }
+
+  $.log(`${prefix}: ${label}奖励余额 => ${num}`);
+  return num;
+}
+
+async function handleKitSign(cookie, riskContext, prefix) {
+  const lines = [];
+  const kitResponse = await queryKitTask(cookie, riskContext);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: 签到锦囊原始返回 => ${stringifySnippet(kitResponse)}`);
+  }
+
+  if (!isKitTaskSuccess(kitResponse)) {
+    lines.push(`${prefix}: 签到信息查询失败，${extractMessage(kitResponse)}`);
+    return lines;
+  }
+
+  const kitTask = getKitTask(kitResponse);
+  $.log(`${prefix}: 签到锦囊 => ${formatKitTask(kitTask)}`);
+
+  if (isKitAlreadyDone(kitTask)) {
+    lines.push(`${prefix}: 今日已签到，${formatKitTask(kitTask)}`);
+    return lines;
+  }
+
+  const signResponse = await doKitSign(cookie, riskContext, kitTask);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: 签到原始返回 => ${stringifySnippet(signResponse)}`);
+  }
+
+  if (isKitSignSuccess(signResponse)) {
+    const prize = extractPrizeMoney(signResponse);
+    lines.push(`${prefix}: 签到成功${prize ? `，获得 ${prize} 京豆/健康币` : ''}`);
+  } else {
+    lines.push(`${prefix}: 签到失败，${extractMessage(signResponse)}`);
+  }
+
+  await sleep(800);
+  const afterKitResponse = await queryKitTask(cookie, riskContext);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: 签到后锦囊原始返回 => ${stringifySnippet(afterKitResponse)}`);
+  }
+  const afterKitTask = getKitTask(afterKitResponse);
+  if (afterKitTask) {
+    $.log(`${prefix}: 签到后锦囊 => ${formatKitTask(afterKitTask)}`);
+  }
+
+  return lines;
+}
+
 async function handleAccount(cookie, index) {
   const userName = getUserName(cookie);
   const prefix = `账号${index} ${userName}`;
@@ -729,6 +1015,9 @@ async function handleAccount(cookie, index) {
   if (riskContext.error) {
     $.log(`${prefix}: gias 动态 token 获取失败，降级使用 Cookie token：${riskContext.error.message}`);
   }
+
+  await logAwardBalance(cookie, riskContext, prefix, '初始');
+  lines.push(...await handleKitSign(cookie, riskContext, prefix));
 
   const firstResponse = await queryTaskList(cookie, riskContext);
   if (isDebugEnabled()) {
@@ -748,6 +1037,7 @@ async function handleAccount(cookie, index) {
   const pendingTasks = firstTasks.filter(canAutoDoTask);
   if (pendingTasks.length === 0) {
     lines.push(`${prefix}: 未找到可自动上报的任务`);
+    await logAwardBalance(cookie, riskContext, prefix, '最终');
     return lines;
   }
 
@@ -780,6 +1070,7 @@ async function handleAccount(cookie, index) {
   const secondTasks = flattenTasks(secondResponse);
   $.log(`${prefix}: 上报后任务列表 => ${secondTasks.map(formatTask).join(' | ') || '空'}`);
   lines.push(...await claimTasks(cookie, riskContext, secondTasks, prefix));
+  await logAwardBalance(cookie, riskContext, prefix, '最终');
 
   if (lines.length === 0) {
     lines.push(`${prefix}: 已执行任务链路，暂无可领取奖励`);
@@ -801,7 +1092,7 @@ async function main() {
       messages.push(...lines);
     } catch (error) {
       const userName = getUserName(cookies[index]);
-      const message = `账号${index + 1} ${userName}: 执行异常，${error.message}`;
+      const message = `账号${index + 1} ${userName}: 执行异常，${error.stack || error.message || error}`;
       $.log(message);
       messages.push(message);
     }
@@ -818,4 +1109,5 @@ main()
   })
   .finally(() => {
     $.done();
+    process.exit(0);
   });

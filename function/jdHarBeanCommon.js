@@ -455,6 +455,10 @@ async function getJsSecuritySigner(options = {}) {
       }
     }
     window.eval(scriptSource);
+    const prepareDelayMs = Number(signerOptions?.prepareDelayMs || 0);
+    if (Number.isFinite(prepareDelayMs) && prepareDelayMs > 0) {
+      await sleep(prepareDelayMs);
+    }
 
     const ParamsSignCtor = typeof window.ParamsSign === 'function'
       ? window.ParamsSign
@@ -467,6 +471,7 @@ async function getJsSecuritySigner(options = {}) {
 
     const {
       skipManualPrepare = false,
+      prepareDelayMs: _prepareDelayMs,
       ...paramsSignOptions
     } = signerOptions || {};
     const signer = new ParamsSignCtor({
