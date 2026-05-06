@@ -1,5 +1,5 @@
 /*
-cron:1 0 * * * jd_cyber_circle_sign_bean.js
+cron:1 0 * * * jdCyber_circle_sign_bean(repeated).js
 
 赛博机友圈签到领京豆。
 
