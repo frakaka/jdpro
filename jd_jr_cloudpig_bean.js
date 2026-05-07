@@ -20,7 +20,7 @@ const {
   stringifySnippet,
 } = require('./function/jdHarBeanCommon');
 
-const $ = new Env('桌面组件领京豆');
+const $ = new Env('养猪桌面组件领京豆');
 
 const API_URL = 'https://ms.jr.jd.com/gw2/generic/cloudpig/h5/m/showDeskCompIcon';
 const PAGE_URL = 'https://u.jr.jd.com/';

@@ -462,11 +462,13 @@ async function getJsSecuritySigner(options = {}) {
 
     const ParamsSignCtor = typeof window.ParamsSign === 'function'
       ? window.ParamsSign
-      : (typeof window.ParamsSignLite === 'function' ? window.ParamsSignLite : null);
+      : (typeof window.ParamsSignLite === 'function'
+        ? window.ParamsSignLite
+        : (typeof window.ParamsSignMain === 'function' ? window.ParamsSignMain : null));
 
     if (!ParamsSignCtor) {
       dom.window.close();
-      throw new Error('js_security 未暴露 ParamsSign/ParamsSignLite');
+      throw new Error('js_security 未暴露 ParamsSign/ParamsSignLite/ParamsSignMain');
     }
 
     const {

@@ -47,7 +47,7 @@ const KIT_H5ST_APP_ID = 'f0e57';
 const H5ST_VERSION = '4.1';
 const KIT_H5ST_VERSION = '5.3';
 const KIT_H5ST_MODE = 'js_security';
-const JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/js_security_v3_lite_0.1.5.js';
+const JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/main/js_security_v3_main.js?v=20260506';
 const CLIENT = 'wh5';
 const CLIENT_VERSION = '1.0.0';
 const SPECIAL_TASK_ID = '5570368';
@@ -743,9 +743,6 @@ async function queryKitTask(cookie, riskContext) {
     functionId: 'jdh_bm_getKitTask',
     appid: KIT_TASK_APP_ID,
     riskContext,
-    h5stAppId: KIT_H5ST_APP_ID,
-    h5stVersion: KIT_H5ST_VERSION,
-    h5stMode: KIT_H5ST_MODE,
     body: {
       m_patch_appKey: APP_KEY,
       groupCode: KIT_GROUP_CODE,
@@ -768,6 +765,22 @@ async function doKitSign(cookie, riskContext, kitTask) {
       encodeId: kitTask.encodeId,
       infoId: KIT_INFO_ID,
       platform: 3,
+    },
+  });
+}
+
+async function claimKitReward(cookie, riskContext, kitTask) {
+  return postApi(cookie, {
+    functionId: 'jdh_msoa_sendAwardGw',
+    appid: AWARD_APP_ID,
+    riskContext,
+    body: {
+      appKey: kitTask.appKey || APP_KEY,
+      activityId: kitTask.activityId || ACTIVITY_ID,
+      channel: kitTask.channel || CHANNEL,
+      taskId: kitTask.id,
+      queryToken: kitTask.queryToken,
+      infoId: KIT_INFO_ID,
     },
   });
 }
@@ -815,10 +828,19 @@ function extractMessage(response) {
   }
 
   const candidateKeys = ['msg', 'message', 'echo', 'errMsg'];
+  const candidateObjects = [
+    response?.result?.result,
+    response?.data?.result,
+    response?.result,
+    response?.data,
+    response,
+  ];
   for (const key of candidateKeys) {
-    const value = response?.[key] || response?.data?.[key] || response?.result?.[key];
-    if (typeof value === 'string' && value) {
-      return value;
+    for (const candidate of candidateObjects) {
+      const value = candidate?.[key];
+      if (typeof value === 'string' && value) {
+        return value;
+      }
     }
   }
 
@@ -863,16 +885,16 @@ function isRewardSuccess(response) {
 
 function isDoTaskSuccess(response) {
   const code = Number(response?.code);
+  const bizCode = Number(response?.data?.bizCode ?? response?.result?.bizCode ?? response?.result?.result?.bizCode);
   const resultCode = Number(response?.result?.code);
-  const bizCode = Number(response?.data?.bizCode ?? response?.result?.bizCode);
   if (code !== 0) {
     return false;
   }
-  if (!Number.isNaN(resultCode)) {
-    return resultCode === 0;
-  }
   if (!Number.isNaN(bizCode)) {
     return bizCode === 0 || bizCode === 2;
+  }
+  if (!Number.isNaN(resultCode)) {
+    return resultCode === 0;
   }
   return false;
 }
@@ -887,6 +909,25 @@ function isKitAlreadyDone(kitTask) {
 
 function isKitSignSuccess(response) {
   return isDoTaskSuccess(response);
+}
+
+function pushAndLog(lines, message) {
+  lines.push(message);
+  $.log(message);
+}
+
+function summarizeKitResponse(response) {
+  const kitTask = getKitTask(response);
+  return stringifySnippet({
+    code: response?.code,
+    msg: response?.msg || response?.message || response?.echo,
+    topKeys: response && typeof response === 'object' ? Object.keys(response) : [],
+    resultKeys: response?.result && typeof response.result === 'object' ? Object.keys(response.result) : [],
+    dataKeys: response?.data && typeof response.data === 'object' ? Object.keys(response.data) : [],
+    encodeId: kitTask?.encodeId ? '存在' : '不存在',
+    status: kitTask?.status,
+    id: kitTask?.id,
+  }, 800);
 }
 
 function extractPrizeMoney(response) {
@@ -961,13 +1002,14 @@ async function logAwardBalance(cookie, riskContext, prefix, label) {
 
 async function handleKitSign(cookie, riskContext, prefix) {
   const lines = [];
+  $.log(`${prefix}: 开始检查签到锦囊`);
   const kitResponse = await queryKitTask(cookie, riskContext);
   if (isDebugEnabled()) {
     $.log(`${prefix}: 签到锦囊原始返回 => ${stringifySnippet(kitResponse)}`);
   }
 
   if (!isKitTaskSuccess(kitResponse)) {
-    lines.push(`${prefix}: 签到信息查询失败，${extractMessage(kitResponse)}`);
+    pushAndLog(lines, `${prefix}: 签到信息查询失败，${extractMessage(kitResponse)}，诊断=${summarizeKitResponse(kitResponse)}`);
     return lines;
   }
 
@@ -975,20 +1017,19 @@ async function handleKitSign(cookie, riskContext, prefix) {
   $.log(`${prefix}: 签到锦囊 => ${formatKitTask(kitTask)}`);
 
   if (isKitAlreadyDone(kitTask)) {
-    lines.push(`${prefix}: 今日已签到，${formatKitTask(kitTask)}`);
+    pushAndLog(lines, `${prefix}: 今日已签到，${formatKitTask(kitTask)}`);
     return lines;
   }
 
+  if (Number(kitTask.status) === TASK_STATUS.CAN_REWARD) {
+    lines.push(...await handleKitClaim(cookie, riskContext, kitTask, prefix));
+    return lines;
+  }
+
+  $.log(`${prefix}: 开始执行签到 => ${formatKitTask(kitTask)}`);
   const signResponse = await doKitSign(cookie, riskContext, kitTask);
   if (isDebugEnabled()) {
     $.log(`${prefix}: 签到原始返回 => ${stringifySnippet(signResponse)}`);
-  }
-
-  if (isKitSignSuccess(signResponse)) {
-    const prize = extractPrizeMoney(signResponse);
-    lines.push(`${prefix}: 签到成功${prize ? `，获得 ${prize} 京豆/健康币` : ''}`);
-  } else {
-    lines.push(`${prefix}: 签到失败，${extractMessage(signResponse)}`);
   }
 
   await sleep(800);
@@ -999,6 +1040,36 @@ async function handleKitSign(cookie, riskContext, prefix) {
   const afterKitTask = getKitTask(afterKitResponse);
   if (afterKitTask) {
     $.log(`${prefix}: 签到后锦囊 => ${formatKitTask(afterKitTask)}`);
+  }
+
+  if (isKitSignSuccess(signResponse)) {
+    const prize = extractPrizeMoney(signResponse);
+    pushAndLog(lines, `${prefix}: 签到成功${prize ? `，获得 ${prize} 京豆/健康币` : ''}`);
+    return lines;
+  }
+
+  if (Number(afterKitTask?.status) === TASK_STATUS.CAN_REWARD) {
+    lines.push(...await handleKitClaim(cookie, riskContext, afterKitTask, prefix));
+    return lines;
+  }
+
+  pushAndLog(lines, `${prefix}: 签到失败，${extractMessage(signResponse)}`);
+  return lines;
+}
+
+async function handleKitClaim(cookie, riskContext, kitTask, prefix) {
+  const lines = [];
+  $.log(`${prefix}: 开始领取签到奖励 => ${formatKitTask(kitTask)}`);
+  const claimResponse = await claimKitReward(cookie, riskContext, kitTask);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: 签到领奖原始返回 => ${stringifySnippet(claimResponse)}`);
+  }
+
+  if (isRewardSuccess(claimResponse)) {
+    const prize = extractPrizeMoney(claimResponse);
+    pushAndLog(lines, `${prefix}: 签到领奖成功${prize ? `，获得 ${prize} 京豆/健康币` : ''}`);
+  } else {
+    pushAndLog(lines, `${prefix}: 签到领奖失败，${extractMessage(claimResponse)}`);
   }
 
   return lines;

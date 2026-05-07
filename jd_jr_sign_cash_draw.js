@@ -73,7 +73,7 @@ const {
   stringifySnippet,
 } = require('./function/jdHarBeanCommon');
 
-const $ = new Env('京东金融签到领现金任务分析');
+const $ = new Env('京东金融签到领现金任务');
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148/application=JDJR-App&clientType=ios&iosType=iphone&clientVersion=8.1.90&HiClVersion=8.1.90&isUpdate=0&osVersion=26.2&osName=iOS&screen=844*390&src=App Store&netWork=1&netWorkType=1&CpayJS=UnionPay/1.0 JDJR&stockSDK=stocksdk-iphone_6.0.0&sPoint=&jdPay=(*#@jdPaySDK*#@jdPayChannel=jdfinance&jdPayChannelVersion=8.1.90&jdPaySdkVersion=4.02.00.00&jdPayClientName=iOS*#@jdPaySDK*#@)';
 const PAGE_URL = 'https://member.jr.jd.com/activity/new-sign-in/home/?channelLv=shouyedou&jrtransparentbar=true&jrcontainer=h5&jrlogin=true';
