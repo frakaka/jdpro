@@ -112,6 +112,21 @@ async function invokeTask(cookie, userName, task, optType) {
   return callCampusApi(cookie, 'campusTask_interact_invoke', body, userName);
 }
 
+async function invokeSign(cookie, userName, signModule) {
+  const body = {
+    interactActId: INTERACT_ACT_ID,
+    taskId: signModule.taskId,
+    itemId: signModule.itemId || '1',
+    optType: 0,
+    taskType: Number(signModule.taskType || 5),
+    clientChannel: 0,
+    babelChannel: BABEL_CHANNEL,
+    requestType: 0,
+  };
+
+  return callCampusApi(cookie, 'campusTask_interact_invoke', body, userName);
+}
+
 function getTaskItemId(task) {
   return task.itemId || task.subTaskInfo?.itemId || task.visitTaskInfo?.itemId || '';
 }
@@ -353,14 +368,23 @@ async function handleSignModule(cookie, index, userName) {
     return;
   }
 
-  const signTask = {
-    taskId: signModule.taskId,
-    itemId: signModule.itemId || '1',
-    taskType: signModule.taskType || 5,
-    taskName: '校园签到',
-    status: signModule.todaySignStatus,
-  };
-  await tryClaimReward(cookie, index, userName, signTask, '校园签到');
+  if (!signModule.taskId) {
+    $.log(`账号${index} ${userName}: 校园签到缺少 taskId，跳过 => ${stringifyForLog(signModule, 1000)}`);
+    return;
+  }
+
+  const signResult = await invokeSign(cookie, userName, signModule);
+  $.log(`账号${index} ${userName}: 校园签到 => ${stringifyForLog(signResult, 1200)}`);
+
+  if (!isSuccess(signResult)) {
+    return;
+  }
+
+  const refreshedSignData = await querySignModule(cookie, userName);
+  const refreshedSignModule = readSignModule(refreshedSignData);
+  if (refreshedSignModule) {
+    $.log(`账号${index} ${userName}: 签到后状态 => today=${refreshedSignModule.todaySignStatus}, continuousDays=${refreshedSignModule.continuousDays}, totalBean=${refreshedSignModule.totalBean?.amount || '-'}`);
+  }
 }
 
 async function runAccount(cookie, index) {
