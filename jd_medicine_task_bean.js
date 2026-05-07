@@ -18,10 +18,10 @@ cron:26 0 * * * jd_medicine_task_bean.js
    含义：是否打印更长接口原始返回片段。
    是否必须：否，配置为 1 时开启。
 
-5. JD_MEDICINE_USE_CHROME / JD_MEDICINE_CHROME_DEBUG_PORT / JD_MEDICINE_CHROME_BIN
-   含义：配置为 JD_MEDICINE_USE_CHROME=1 时强制走 Chrome/CDP 浏览器态；
-        JD_MEDICINE_CHROME_DEBUG_PORT 可连接已有 9222；未配置端口时自动启动可用 Chrome。
-   是否必须：否，Node 首个接口 HTTP 403 时默认自动 fallback 到 Chrome，可用 JD_MEDICINE_DISABLE_CHROME_FALLBACK=1 关闭。
+5. JD_MEDICINE_CHROME_DEBUG_PORT / JD_MEDICINE_CHROME_BIN
+   含义：脚本固定走 Chrome/CDP 浏览器态；JD_MEDICINE_CHROME_DEBUG_PORT 可连接已有 9222；
+        未配置端口时自动启动可用 Chrome。
+   是否必须：否。
 */
 
 'use strict';
@@ -31,18 +31,15 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const got = require('got');
 const WebSocket = require('ws');
 const jdCookieNode = require('./jdCookie.js');
 const {
   Env,
   getGiasRiskContext,
-  getRequestUuid,
   getUserName,
   hasJingBeanReward,
   mergeCookieString,
   parseCookieString,
-  postFormApi,
   safeJsonParse,
   sleep,
   stringifySnippet,
@@ -63,7 +60,6 @@ const H5ST_APP_ID = '4b818';
 const DEFAULT_GIAS_BIZ_ID = 'JDR_shields';
 const PAGE_URL = 'https://pro.m.jd.com/mall/active/2k1pupFzSALNodSGK3hZ4Bu5D5sx/index.html';
 const PAGE_REFERER = `${PAGE_URL}?sourceType=JDAPP_Kingkong_KBGY`;
-const ORIGIN = 'https://pro.m.jd.com';
 const DEFAULT_UUID = '224e6c34e7638196d45b7006b8f1713f8d4ec463';
 const DEFAULT_EID = 'HSYEEPKHTG76ATT3YFGAOCCDJCVIBKLSLTHDL6LJUAYZ33I4RMZY7PWTMLWZXJEXEY6SVG3RS3UDIR3577QI35YTPA';
 const DEFAULT_EID_TOKEN = 'jdd03HSYEEPKHTG76ATT3YFGAOCCDJCVIBKLSLTHDL6LJUAYZ33I4RMZY7PWTMLWZXJEXEY6SVG3RS3UDIR3577QI35YTPAAAAAM57R7YQAYAAAAACG66HQIZDCY7HAX';
@@ -103,7 +99,6 @@ const DEFAULT_ACTIVITY_COOKIE = [
 ].join('; ');
 const JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/main/js_security_v3_main.js?v=20260506';
 const USER_AGENT = process.env.JD_MEDICINE_USER_AGENT || 'jdapp;iPhone;15.7.20;;;M/5.0;appBuild/170437;jdSupportDarkMode/0;lang/zh_CN;ctype/0;site/CN;ccy/CNY;elder/0;ef/1;ep/%7B%22ciphertype%22%3A5%2C%22cipher%22%3A%7B%22ud%22%3A%22CtS0ZJZtCzHvDzYzENO5DwG0DWS3CNK2YtrwCJcnC2Y4ZNHvYzG2Cm%3D%3D%22%2C%22sv%22%3A%22CtYkCq%3D%3D%22%2C%22iad%22%3A%22%22%7D%2C%22ts%22%3A1778057436%2C%22hdid%22%3A%22JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw%3D%22%2C%22version%22%3A%221.0.3%22%2C%22appname%22%3A%22com.360buy.jdmobile%22%2C%22ridx%22%3A-1%7D;Mozilla/5.0 (iPhone; CPU iPhone OS 26_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148;supportJDSHWK/1;';
-const REQUEST_TIMEOUT_MS = 15000;
 const DEFAULT_MAX_TASKS = 12;
 const MIN_BROWSE_WAIT_MS = 5000;
 const CHROME_PAGE_WARMUP_MS = 5000;
@@ -131,14 +126,6 @@ function isDebugEnabled() {
 
 function isDoAllTasksEnabled() {
   return process.env.JD_MEDICINE_DO_ALL_TASKS === '1';
-}
-
-function isChromeForced() {
-  return process.env.JD_MEDICINE_USE_CHROME === '1';
-}
-
-function isChromeFallbackEnabled() {
-  return process.env.JD_MEDICINE_DISABLE_CHROME_FALLBACK !== '1';
 }
 
 function getMaxTasks() {
@@ -564,14 +551,18 @@ function getChromeRuntimeScript() {
         });
       }
 
+      function getParamsSignCtor() {
+        return window.ParamsSign || window.ParamsSignLite || window.ParamsSignMain;
+      }
+
       async function ensureSignRuntime() {
-        if (signRuntimeReady && (window.ParamsSignLite || window.ParamsSign)) {
+        if (signRuntimeReady && getParamsSignCtor()) {
           return;
         }
         await loadScript(JS_SECURITY_SCRIPT_URL);
         await new Promise((resolve) => setTimeout(resolve, 500));
-        if (!window.ParamsSignLite && !window.ParamsSign) {
-          throw new Error('Chrome 页面未暴露 ParamsSign/ParamsSignLite');
+        if (!getParamsSignCtor()) {
+          throw new Error('Chrome 页面未暴露 ParamsSign/ParamsSignLite/ParamsSignMain');
         }
         signRuntimeReady = true;
       }
@@ -611,7 +602,7 @@ function getChromeRuntimeScript() {
 
       async function createH5st(functionId, bodyText) {
         await ensureSignRuntime();
-        const ParamsSignCtor = window.ParamsSign || window.ParamsSignLite;
+        const ParamsSignCtor = getParamsSignCtor();
         const signer = new ParamsSignCtor({ appId: H5ST_APP_ID });
         const signFields = {
           appid: APPID,
@@ -667,6 +658,7 @@ function getChromeRuntimeScript() {
               signer: {
                 hasParamsSign: typeof window.ParamsSign === 'function',
                 hasParamsSignLite: typeof window.ParamsSignLite === 'function',
+                hasParamsSignMain: typeof window.ParamsSignMain === 'function',
               },
               formKeys: Array.from(form.keys()),
             },
@@ -678,12 +670,35 @@ function getChromeRuntimeScript() {
 
       return {
     href: location.href,
-        hasParamsSign: Boolean(window.ParamsSign || window.ParamsSignLite),
+        hasParamsSign: Boolean(getParamsSignCtor()),
         hasParamsSignFull: typeof window.ParamsSign === 'function',
         hasParamsSignLite: typeof window.ParamsSignLite === 'function',
+        hasParamsSignMain: typeof window.ParamsSignMain === 'function',
       };
     })()
   `;
+}
+
+async function injectChromeRuntime(runtime, errorPrefix) {
+  const result = await runtime.page.send('Runtime.evaluate', {
+    expression: getChromeRuntimeScript(),
+    awaitPromise: true,
+    returnByValue: true,
+  }, CHROME_EVALUATE_TIMEOUT_MS);
+  if (result.exceptionDetails) {
+    throw new Error(`${errorPrefix}: ${stringifySnippet(result.exceptionDetails, 800)}`);
+  }
+  return result.result?.value || {};
+}
+
+async function ensureChromeRuntimeInjected(runtime) {
+  const result = await runtime.page.send('Runtime.evaluate', {
+    expression: `Boolean(window.__jdMedicineRuntime && typeof window.__jdMedicineRuntime.postApi === 'function')`,
+    returnByValue: true,
+  }, CHROME_EVALUATE_TIMEOUT_MS);
+  if (result.exceptionDetails || !result.result?.value) {
+    await injectChromeRuntime(runtime, 'Chrome 运行时重注入异常');
+  }
 }
 
 async function prepareChromeRuntime(runtime, cookie) {
@@ -691,14 +706,7 @@ async function prepareChromeRuntime(runtime, cookie) {
   await navigateChrome(runtime, PAGE_REFERER);
   const warmupMs = readPositiveInt(process.env.JD_MEDICINE_CHROME_WARMUP_MS || CHROME_PAGE_WARMUP_MS, CHROME_PAGE_WARMUP_MS);
   await sleep(warmupMs);
-  const result = await runtime.page.send('Runtime.evaluate', {
-    expression: getChromeRuntimeScript(),
-    awaitPromise: true,
-    returnByValue: true,
-  }, CHROME_EVALUATE_TIMEOUT_MS);
-  if (result.exceptionDetails) {
-    throw new Error(`Chrome 初始化异常: ${stringifySnippet(result.exceptionDetails, 800)}`);
-  }
+  const initInfo = await injectChromeRuntime(runtime, 'Chrome 初始化异常');
   const cookieResult = await runtime.page.send('Runtime.evaluate', {
     expression: `(() => {
       const keys = document.cookie.split(';').map((item) => item.trim().split('=')[0]).filter(Boolean);
@@ -713,7 +721,7 @@ async function prepareChromeRuntime(runtime, cookie) {
     returnByValue: true,
   }, CHROME_EVALUATE_TIMEOUT_MS);
   return {
-    ...(result.result?.value || {}),
+    ...initInfo,
     warmupMs,
     cookieSnapshot: cookieResult.result?.value || {},
   };
@@ -721,6 +729,7 @@ async function prepareChromeRuntime(runtime, cookie) {
 
 async function chromePostMarketApi(runtime, cookie, username, functionId, body = {}) {
   logImportantRequest(username, `chrome:${functionId}`, body);
+  await ensureChromeRuntimeInjected(runtime);
   const payload = {
     functionId,
     body,
@@ -736,7 +745,16 @@ async function chromePostMarketApi(runtime, cookie, username, functionId, body =
   }
   const response = result.result?.value || { success: false, message: 'Chrome 无返回' };
   logImportantResponse(username, `chrome:${functionId}`, response);
-  return response.data || response;
+  if (response.data && typeof response.data === 'object' && !Array.isArray(response.data)) {
+    return {
+      ...response.data,
+      httpStatus: response.statusCode,
+    };
+  }
+  return {
+    ...response,
+    httpStatus: response.statusCode,
+  };
 }
 
 function logImportantRequest(username, functionId, body) {
@@ -753,42 +771,6 @@ function logImportantRequest(username, functionId, body) {
 
 function logImportantResponse(username, functionId, response) {
   $.log(`账号 ${username}: ${functionId} response => ${stringifyForLog(response, isDebugEnabled() ? 5000 : 1500)}`);
-}
-
-async function callMarketApi(cookie, username, functionId, body = {}) {
-  logImportantRequest(username, functionId, body);
-  const response = await postFormApi(cookie, {
-    endpoint: API_ENDPOINT,
-    functionId,
-    appid: APPID,
-    body,
-    origin: ORIGIN,
-    referer: PAGE_REFERER,
-    userAgent: USER_AGENT,
-    extraForm: {
-      'x-api-eid-token': getEidToken(cookie),
-    },
-    extraHeaders: {
-      'x-rp-client': 'h5_1.0.0',
-      'x-referer-page': PAGE_URL,
-    },
-    h5stAppId: H5ST_APP_ID,
-    h5stMode: process.env.JD_MEDICINE_H5ST_MODE || 'h5st41',
-    h5stScriptUrl: process.env.JD_MEDICINE_H5ST_SCRIPT_URL || JS_SECURITY_SCRIPT_URL,
-    h5stPageUrl: PAGE_URL,
-    h5stBizId: 'pro',
-    h5stVersion: '5.3',
-  });
-  logImportantResponse(username, functionId, response);
-  return response;
-}
-
-async function queryPageIndex(cookie, username) {
-  return callMarketApi(cookie, username, 'market_daily_pageIndex', {});
-}
-
-async function queryBeanBalance(cookie, username) {
-  return callMarketApi(cookie, username, 'jdh_bm_balanceBeans', {});
 }
 
 function getTaskList(pageResponse) {
@@ -862,27 +844,6 @@ function extractBrowseWaitMs(task) {
   return Number.isFinite(waitMs) ? waitMs : MIN_BROWSE_WAIT_MS;
 }
 
-async function visitTaskUrl(cookie, username, task) {
-  if (!task?.url) {
-    return;
-  }
-
-  $.log(`账号 ${username}: 浏览任务页 => ${task.assignmentName} | ${task.url}`);
-  const response = await got.get(task.url, {
-    headers: {
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      Cookie: cookie,
-      Referer: PAGE_REFERER,
-      'User-Agent': USER_AGENT,
-      'Accept-Language': 'zh-CN,zh-Hans;q=0.9',
-    },
-    followRedirect: true,
-    throwHttpErrors: false,
-    timeout: { request: REQUEST_TIMEOUT_MS },
-  });
-  $.log(`账号 ${username}: 浏览任务页响应 => HTTP ${response.statusCode}, finalUrl=${response.url || task.url}`);
-}
-
 function buildCompleteBody(cookie, task) {
   const assignmentType = Number(task.assignmentType);
   const body = {
@@ -900,18 +861,6 @@ function buildCompleteBody(cookie, task) {
   }
 
   return body;
-}
-
-async function completeTask(cookie, username, task) {
-  if (Number(task.assignmentType) === 1) {
-    await visitTaskUrl(cookie, username, task);
-    const waitMs = extractBrowseWaitMs(task);
-    $.log(`账号 ${username}: 等待浏览完成 => ${waitMs}ms`);
-    await sleep(waitMs);
-  }
-
-  const body = buildCompleteBody(cookie, task);
-  return callMarketApi(cookie, username, 'market_daily_doCompleteTask', body);
 }
 
 async function visitTaskUrlChrome(runtime, username, task) {
@@ -959,70 +908,9 @@ function logRewards(username, response) {
 async function handleAccount(cookie, index) {
   const username = getUserName(cookie);
   $.log(`\n==== 账号${index} ${username} ====`);
-  const activityCookie = await getActivityCookie(cookie, username);
-
-  if (isChromeForced()) {
-    await handleAccountChrome(activityCookie, index, { headerLogged: true, skipGias: true });
-    return;
-  }
-
-  let page = await queryPageIndex(activityCookie, username);
-  if (page?.code !== '0000') {
-    $.log(`账号 ${username}: 获取任务列表失败 => ${stringifyForLog(page)}`);
-    if (isChromeFallbackEnabled() && page?.httpStatus === 403) {
-      $.log(`账号 ${username}: Node 路线 HTTP 403，切换 Chrome/CDP 路线`);
-      await handleAccountChrome(activityCookie, index, { headerLogged: true, skipGias: true });
-    }
-    return;
-  }
-
-  logToast(username, page);
-  let taskList = getTaskList(page);
-  logTaskList(username, taskList);
-
-  const balance = await queryBeanBalance(activityCookie, username);
-  if (balance?.success || balance?.code === 0) {
-    $.log(`账号 ${username}: 当前京豆余额 => ${balance.data}`);
-  }
-
-  let executedCount = 0;
-  const maxTasks = getMaxTasks();
-  while (executedCount < maxTasks) {
-    const nextTask = taskList.find(shouldRunTask);
-    if (!nextTask) {
-      $.log(`账号 ${username}: 没有可继续执行的任务`);
-      break;
-    }
-
-    $.log(`账号 ${username}: 执行任务 => ${summarizeTask(nextTask)}`);
-    const completeResult = await completeTask(activityCookie, username, nextTask);
-    logRewards(username, completeResult);
-    executedCount += 1;
-
-    await sleep(1000);
-    page = await queryPageIndex(activityCookie, username);
-    logToast(username, page);
-    taskList = getTaskList(page);
-    logTaskList(username, taskList);
-
-    if (page?.code !== '0000') {
-      $.log(`账号 ${username}: 刷新任务列表失败，停止当前账号 => ${stringifyForLog(page)}`);
-      break;
-    }
-  }
-
-  $.log(`账号 ${username}: 本轮执行任务数 => ${executedCount}`);
-}
-
-async function handleAccountChrome(cookie, index, options = {}) {
-  const username = getUserName(cookie);
-  if (!options.headerLogged) {
-    $.log(`\n==== 账号${index} ${username} ====`);
-  }
-
   let runtime = null;
   try {
-    const activityCookie = options.skipGias ? cookie : await getActivityCookie(cookie, username);
+    const activityCookie = await getActivityCookie(cookie, username);
     runtime = await getChromeRuntime();
     const initInfo = await prepareChromeRuntime(runtime, activityCookie);
     $.log(`账号 ${username}: Chrome 初始化 => ${stringifyForLog(initInfo)}`);
