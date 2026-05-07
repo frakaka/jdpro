@@ -55,7 +55,7 @@ const {
   stringifySnippet,
 } = require('./function/jdHarBeanCommon.js');
 
-const $ = new Env('领券中心首页浏览领京豆');
+const $ = new Env('领券中心首页浏览');
 
 let notify = null;
 try {
