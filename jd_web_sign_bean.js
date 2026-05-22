@@ -1,5 +1,5 @@
 /*
-cron:36 0 * * * jd_web_sign_bean.js
+cron:42 0 * * * jd_web_sign_bean.js
 
 JD Web 入口签到、任务、抽奖。
 

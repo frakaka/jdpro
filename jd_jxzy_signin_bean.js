@@ -1,5 +1,5 @@
 /*
-cron:11 0 * * * jd_jxzy_signin_bean.js
+cron:31 0 * * * jd_jxzy_signin_bean.js
 京喜自营签到、返回首页领取京豆、浏览任务、任务领奖。
 
 环境变量说明：

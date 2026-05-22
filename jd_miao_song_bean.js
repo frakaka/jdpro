@@ -1,5 +1,5 @@
 /*
-cron:9 0 * * * jd_miao_song_bean.js
+cron:35 0 * * * jd_miao_song_bean.js
 
 环境变量说明：
 1. JD_MIAO_SONG_TASK_LIMIT

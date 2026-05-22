@@ -1,5 +1,5 @@
 /*
-cron:12 0 * * * jd_bom_signin_bean.js
+cron:4 0 * * * jd_bom_signin_bean.js
 
 环境变量说明：
 1. JD_BOM_ACTIVITY_ID / JD_BOM_SCENE_ID / JD_BOM_TEMPLATE_ID / JD_BOM_FLOOR_ID / JD_BOM_ENC

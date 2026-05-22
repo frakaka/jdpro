@@ -1,5 +1,5 @@
 /*
-cron:35 0 * * * jd_tejia_guangyiguang_bean.js
+cron:40 0 * * * jd_tejia_guangyiguang_bean.js
 
 环境变量说明：
 1. JD_TEJIA_GUANGYIGUANG_FULL_COOKIE

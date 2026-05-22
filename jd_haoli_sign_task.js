@@ -1,5 +1,5 @@
 /*
-cron:22 0 * * * jd_haoli_sign_task.js
+cron:12 0 * * * jd_haoli_sign_task.js
 
 京东好礼签到、做任务、抽奖、国家补贴浏览。
 

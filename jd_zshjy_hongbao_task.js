@@ -1,5 +1,5 @@
 /*
-cron:24 0 * * * jd_zshjy_hongbao_task.js
+cron:47 0 * * * jd_zshjy_hongbao_task.js
 
 环境变量说明：
 1. JD_ZSHJY_HONGBAO_EID_TOKEN

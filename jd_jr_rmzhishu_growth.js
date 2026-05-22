@@ -1,5 +1,5 @@
 /*
-cron:32 0 * * * jd_jr_rmzhishu_growth.js
+cron:23 0 * * * jd_jr_rmzhishu_growth.js
 
 环境变量说明：
 1. JDJR_RMZHISHU_GROWTH_SDK_TOKEN

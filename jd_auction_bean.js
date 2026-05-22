@@ -1,5 +1,5 @@
 /*
-cron:25 0 * * * jd_auction_bean.js
+cron:2 0 * * * jd_auction_bean.js
 
 环境变量说明：
 1. JD_AUCTION_EID_TOKEN

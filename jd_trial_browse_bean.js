@@ -1,5 +1,5 @@
 /*
-cron:48 0 * * * jd_trial_browse_bean.js
+cron:41 0 * * * jd_trial_browse_bean.js
 
 环境变量说明：
 1. JD_TRIAL_CHROME_BIN

@@ -1,5 +1,5 @@
 /*
-cron:16 0 * * * jd_baitiao_sign_bean.js
+cron:3 0 * * * jd_baitiao_sign_bean.js
 
 环境变量说明：
 1. JD_BAITIAO_SIGN_DEBUG

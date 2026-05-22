@@ -1,5 +1,5 @@
 /*
-cron:21 0,12,18 * * * jd_yangdae_goose.js
+cron:45 0 * * * jd_yangdae_goose.js
 
 环境变量说明：
 1. JD_YANGDAE_FEED_TIMES

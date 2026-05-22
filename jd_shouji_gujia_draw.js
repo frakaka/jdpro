@@ -1,5 +1,5 @@
 /*
-cron:30 0 * * * jd_shouji_gujia_draw.js
+cron:38 0 * * * jd_shouji_gujia_draw.js
 
 环境变量说明：
 1. JD_SHOUJI_GUJIA_FULL_COOKIE

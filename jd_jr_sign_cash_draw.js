@@ -1,5 +1,5 @@
 /*
-cron:2 0 * * * jd_jr_sign_cash_draw.js
+cron:26 0 * * * jd_jr_sign_cash_draw.js
 
 环境变量说明：
 1. JDJR_SIGN_CASH_DRAW_FULL_COOKIE

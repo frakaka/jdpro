@@ -1,5 +1,5 @@
 /*
-cron:46 0 * * * jd_qixian_bean.js
+cron:36 0 * * * jd_qixian_bean.js
 
 七鲜签到领京豆：签到、查询抽奖机、浏览任务、抽奖。
 

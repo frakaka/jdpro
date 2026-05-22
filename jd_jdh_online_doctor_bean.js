@@ -1,5 +1,5 @@
 /*
-cron:16 0 * * * jd_jdh_online_doctor_bean.js
+cron:17 0 * * * jd_jdh_online_doctor_bean.js
 
 环境变量说明：
 1. JD_JDH_ONLINE_DOCTOR_DEBUG

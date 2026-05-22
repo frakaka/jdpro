@@ -1,5 +1,5 @@
 /*
-cron:47 0 * * * jd_service_daily_draw_bean.js
+cron:37 0 * * * jd_service_daily_draw_bean.js
 
 京东服务天天抽奖：完成浏览任务，抽奖领京豆/优惠券。
 

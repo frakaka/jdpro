@@ -1,5 +1,5 @@
 /*
-cron:46 0 * * * jd_jr_fishing_sign_full.js
+cron:20 0 * * * jd_jr_fishing_sign_full.js
 
 环境变量说明：
 1. JDJR_FISHING_FULL_COOKIE

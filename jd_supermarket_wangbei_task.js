@@ -1,5 +1,5 @@
 /*
-cron:28 0 * * * jd_supermarket_wangbei_task.js
+cron:39 0 * * * jd_supermarket_wangbei_task.js
 京东超市每日签到和活动任务领汪贝。
 
 环境变量说明：

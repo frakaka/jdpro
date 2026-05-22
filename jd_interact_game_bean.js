@@ -1,5 +1,5 @@
 /*
-cron:18 0 * * * jd_interact_game_bean.js
+cron:16 0 * * * jd_interact_game_bean.js
 
 环境变量说明：
 1. JD_INTERACT_GAME_MAX_TASKS

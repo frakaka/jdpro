@@ -1,5 +1,5 @@
 /*
-cron:15 0 * * * jd_jr_zsj_draw_bean.js
+cron:30 0 * * * jd_jr_zsj_draw_bean.js
 
 环境变量说明：
 1. JD_JR_ZSJ_FP / JD_JR_ZSJ_SDK_TOKEN / JD_JR_ZSJ_EID / JD_JR_ZSJ_JS_TOKEN

@@ -1,5 +1,5 @@
 /*
-cron:14 0 * * * jd_jr_cloudpig_bean.js
+cron:18 0 * * * jd_jr_cloudpig_bean.js
 
 环境变量说明：
 1. JD_JR_CLOUDPIG_FP / JD_JR_CLOUDPIG_SDK_TOKEN / JD_JR_CLOUDPIG_EID

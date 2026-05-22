@@ -1,5 +1,5 @@
 /*
-cron:52 0 * * * jd_jr_zhongcai_sign.js
+cron:29 0 * * * jd_jr_zhongcai_sign.js
 
 环境变量说明：
 1. JDJR_ZHONGCAI_FULL_COOKIE

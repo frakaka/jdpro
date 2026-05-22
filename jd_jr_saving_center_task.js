@@ -1,5 +1,5 @@
 /*
-cron:28 0 * * * jd_jr_saving_center_task.js
+cron:24 0 * * * jd_jr_saving_center_task.js
 
 环境变量说明：
 1. JDJR_SAVING_CENTER_DEBUG

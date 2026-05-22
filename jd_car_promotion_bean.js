@@ -1,5 +1,5 @@
 /*
-cron:24 0 * * * jd_car_promotion_bean.js
+cron:6 0 * * * jd_car_promotion_bean.js
 
 环境变量说明：
 1. JD_CAR_PROMOTION_EID_TOKEN

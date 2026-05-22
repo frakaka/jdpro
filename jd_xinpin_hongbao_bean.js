@@ -1,5 +1,5 @@
 /*
-cron:42 0 * * * jd_xinpin_hongbao_bean.js
+cron:43 0 * * * jd_xinpin_hongbao_bean.js
 
 新品红包浏览任务。
 

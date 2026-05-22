@@ -1,5 +1,5 @@
 /*
-cron:40 0 * * * jd_jr_saving_insurance_bean.js
+cron:25 0 * * * jd_jr_saving_insurance_bean.js
 
 环境变量说明：
 1. JDJR_SAVING_INSURANCE_FULL_COOKIE

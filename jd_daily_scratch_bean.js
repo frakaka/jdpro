@@ -1,5 +1,5 @@
 /*
-cron:12 0 * * * jd_daily_scratch_bean.js
+cron:10 0 * * * jd_daily_scratch_bean.js
 */
 
 'use strict';

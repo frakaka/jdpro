@@ -1,5 +1,5 @@
 /*
-cron:43 0 * * * jd_home_appliance_sign_task_bean.js
+cron:14 0 * * * jd_home_appliance_sign_task_bean.js
 家电家居签到做任务领京豆和金币。
 
 环境变量说明：

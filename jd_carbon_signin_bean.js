@@ -1,5 +1,5 @@
 /*
-cron:12 0 * * * jd_carbon_signin_bean.js
+cron:7 0 * * * jd_carbon_signin_bean.js
 
 环境变量说明：
 1. 本脚本当前没有额外的专属环境变量。

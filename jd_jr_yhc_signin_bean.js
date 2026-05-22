@@ -1,5 +1,5 @@
 /*
-cron:14 0 * * * jd_jr_yhc_signin_bean.js
+cron:28 0 * * * jd_jr_yhc_signin_bean.js
 
 环境变量说明：
 1. JD_JR_JS_TOKEN

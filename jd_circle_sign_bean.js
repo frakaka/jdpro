@@ -1,5 +1,5 @@
 /*
-cron:18 0 * * * jd_circle_sign_bean.js
+cron:8 0 * * * jd_circle_sign_bean.js
 
 圈子签到领京豆。
 

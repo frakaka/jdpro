@@ -1,5 +1,5 @@
 /*
-cron:13 0 * * * jd_fashion_beauty_sign_bean.js
+cron:11 0 * * * jd_fashion_beauty_sign_bean.js
 服装美饰签到领京豆。
 
 环境变量说明：

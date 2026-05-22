@@ -1,5 +1,5 @@
 /*
-cron:18 0 * * * jd_zhuanhongbao_task.js
+cron:46 0 * * * jd_zhuanhongbao_task.js
 
 赚红包任务脚本。
 

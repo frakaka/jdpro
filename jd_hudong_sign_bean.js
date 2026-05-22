@@ -1,5 +1,5 @@
 /*
-cron:36 0 * * * jd_hudong_sign_bean.js
+cron:15 0 * * * jd_hudong_sign_bean.js
 
 京东互动游戏签到和打卡领京豆。
 

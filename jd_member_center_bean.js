@@ -1,5 +1,5 @@
 /*
-cron:10 0 * * * jd_member_center_bean.js
+cron:34 0 * * * jd_member_center_bean.js
 
 环境变量说明：
 1. 本脚本当前没有额外的专属环境变量。

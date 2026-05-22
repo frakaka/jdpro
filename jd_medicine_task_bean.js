@@ -1,5 +1,5 @@
 /*
-cron:26 0 * * * jd_medicine_task_bean.js
+cron:33 0 * * * jd_medicine_task_bean.js
 
 环境变量说明：
 1. JD_MEDICINE_EID / JD_MEDICINE_EID_TOKEN

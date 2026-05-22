@@ -1,5 +1,5 @@
 /*
-cron:10 0 * * * jd_medicine_family_sign_bean.js
+cron:32 0 * * * jd_medicine_family_sign_bean.js
 
 家庭常备药签到领京豆。
 

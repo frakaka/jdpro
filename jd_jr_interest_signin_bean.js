@@ -1,5 +1,5 @@
 /*
-cron:13 0 * * * jd_jr_interest_signin_bean.js
+cron:21 0 * * * jd_jr_interest_signin_bean.js
 
 环境变量说明：
 1. JD_JR_INTEREST_DEBUG

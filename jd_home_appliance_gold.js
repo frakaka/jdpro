@@ -1,5 +1,5 @@
 /*
-cron:35 0 * * * jd_home_appliance_gold.js
+cron:13 0 * * * jd_home_appliance_gold.js
 家电家居金币。
 
 环境变量说明：

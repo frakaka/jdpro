@@ -1,5 +1,5 @@
 /*
-cron:49 0 * * * jd_xqmh_vote_task_bean.js
+cron:44 0 * * * jd_xqmh_vote_task_bean.js
 
 新奇盲盒：商品投票、拆盲盒、做任务、领奖。
 

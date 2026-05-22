@@ -1,5 +1,5 @@
 /*
-cron:20 0 * * * jd_campus_task_bean.js
+cron:5 0 * * * jd_campus_task_bean.js
 
 环境变量说明：
 1. JD_CAMPUS_TASK_MAX_TASKS

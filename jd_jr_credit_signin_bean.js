@@ -1,5 +1,5 @@
 /*
-cron:18 0 * * * jd_jr_credit_signin_bean.js
+cron:19 0 * * * jd_jr_credit_signin_bean.js
 
 环境变量说明：
 1. JD_JR_CREDIT_JS_TOKEN
