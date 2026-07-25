@@ -8,6 +8,7 @@ cron:18 0 * * * jd_huhong_game_browsing_task.js
 'use strict';
 
 const fs = require('fs');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -15,12 +16,26 @@ const WebSocket = require('ws');
 
 const jdCookieNode = require('./jdCookie.js');
 
-const CHROME_BIN = process.env.JD_HUHONG_CHROME_BIN
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const SCRIPT_NAME = '京东互动游戏任务';
+const START_TIME = Date.now();
 const DEBUG_HOST = '127.0.0.1';
 const PAGE_URL = 'https://pro.m.jd.com/mall/active/3fcyrvLZALNPWCEDRvaZJVrzek8v/index.html?babelChannel=ttt106&hybrid_err_view=1&commontitle=no&iconKey=dandanfan';
 const USER_AGENT = 'jdapp;android;15.9.0;;;M/5.0;appBuild/102473;ef/1;ep/%7B%22hdid%22%3A%22JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw%3D%22%2C%22ts%22%3A1784886146757%2C%22ridx%22%3A-1%2C%22cipher%22%3A%7B%22sv%22%3A%22EG%3D%3D%22%2C%22ad%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%2C%22od%22%3A%22YwDvEWTvCzUjZtc1ZI1wDJu2BJu3ZwGjYWG1YtdwZwU1CwYy%22%2C%22ov%22%3A%22Ctq%3D%22%2C%22ud%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%7D%2C%22ciphertype%22%3A5%2C%22version%22%3A%221.2.1%22%2C%22appname%22%3A%22com.jingdong.app.mall%22%7D;jdSupportDarkMode/0;lang/zh_CN;site/CN;elder/2;ccy/CNY;tz/;Mozilla/5.0 (Linux; Android 9; JSN-AL00a Build/HONORJSN-AL00a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36';
 const API_HOST = 'api.m.jd.com';
+const DEFAULT_CHROME_CANDIDATES = [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/opt/homebrew/bin/chromium',
+  '/usr/local/bin/chromium',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+];
 const DEFAULT_LOAD_WAIT_MS = 15000;
 const DEFAULT_AFTER_CLICK_WAIT_MS = 8000;
 const DEFAULT_BROWSE_SETTLE_WAIT_MS = 12000;
@@ -35,6 +50,15 @@ const SWEEP_ROUNDS = Number(process.env.JD_HUHONG_CHROME_SWEEP_ROUNDS || DEFAULT
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function log(...messages) {
+  console.log(messages.join('\n'));
+}
+
+function done() {
+  const seconds = ((Date.now() - START_TIME) / 1000).toFixed(3);
+  log('', `🔔${SCRIPT_NAME}, 结束! 🕛 ${seconds} 秒`, '');
 }
 
 function parseCookies(cookieText) {
@@ -190,63 +214,6 @@ async function collectPageState(cdp) {
   return result.result?.value || {};
 }
 
-async function collectSecurityGlobals(cdp) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression: `
-      (() => Object.keys(window)
-        .filter((key) => /sign|h5st|risk|security|Params/i.test(key))
-        .slice(0, 120)
-        .map((key) => {
-          const value = window[key];
-          return {
-            key,
-            type: typeof value,
-            ctor: value && value.constructor ? value.constructor.name : '',
-          };
-        }))()
-    `,
-    returnByValue: true,
-  });
-  return result.result?.value || [];
-}
-
-async function collectSecurityDetails(cdp) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression: `
-      (() => {
-        const readObject = (name, value) => {
-          if (!value || typeof value !== 'object') {
-            return { name, type: typeof value };
-          }
-          return {
-            name,
-            type: typeof value,
-            keys: Object.keys(value).slice(0, 60),
-            sample: Object.fromEntries(
-              Object.entries(value)
-                .slice(0, 15)
-                .map(([key, item]) => [
-                  key,
-                  typeof item === 'string' && item.length > 40
-                    ? item.slice(0, 18) + '...' + item.slice(-8)
-                    : item,
-                ]),
-            ),
-          };
-        };
-
-        return [
-          readObject('__JDWEBSIGNHELPER_$DATA__', window.__JDWEBSIGNHELPER_$DATA__),
-          readObject('jdtRiskContext', window.jdtRiskContext),
-          readObject('securitySDKS', window.securitySDKS),
-        ];
-      })()
-    `,
-    returnByValue: true,
-  });
-  return result.result?.value || [];
-}
-
 async function clickText(cdp, text) {
   const result = await cdp.send('Runtime.evaluate', {
     expression: `
@@ -310,10 +277,10 @@ async function clickTextSeries(cdp, texts, maxClicks = 20) {
 
 async function getScrollMetrics(cdp) {
   const result = await cdp.send('Runtime.evaluate', {
-    expression: '({scrollY: window.scrollY, innerHeight: window.innerHeight, scrollHeight: document.scrollingElement ? document.scrollingElement.scrollHeight : document.body.scrollHeight})',
+    expression: '({innerHeight: window.innerHeight, scrollHeight: document.scrollingElement ? document.scrollingElement.scrollHeight : document.body.scrollHeight})',
     returnByValue: true,
   });
-  return result.result?.value || { scrollY: 0, innerHeight: 0, scrollHeight: 0 };
+  return result.result?.value || { innerHeight: 0, scrollHeight: 0 };
 }
 
 async function scrollToPosition(cdp, y) {
@@ -322,6 +289,12 @@ async function scrollToPosition(cdp, y) {
     returnByValue: true,
   });
   await sleep(1200);
+}
+
+function getChromeBin() {
+  const configured = String(process.env.JD_HUHONG_CHROME_BIN || '').trim();
+  const candidates = configured ? [configured, ...DEFAULT_CHROME_CANDIDATES] : DEFAULT_CHROME_CANDIDATES;
+  return candidates.find((item) => item && fs.existsSync(item)) || '';
 }
 
 async function harvestCurrentViewport(cdp) {
@@ -417,8 +390,12 @@ function getChromeArgs(port, userDataDir) {
 
 async function runAccount(cookieText, index) {
   const cookieLabel = parseCookies(cookieText).find((item) => item.name === 'pt_pin')?.value || `账号${index}`;
+  const chromeBin = getChromeBin();
+  if (!chromeBin) {
+    throw new Error('未找到 Chrome/Chromium，请配置 JD_HUHONG_CHROME_BIN');
+  }
   const port = await new Promise((resolve, reject) => {
-    const server = require('net').createServer();
+    const server = net.createServer();
     server.listen(0, DEBUG_HOST, () => {
       const value = server.address().port;
       server.close(() => resolve(value));
@@ -426,7 +403,7 @@ async function runAccount(cookieText, index) {
     server.once('error', reject);
   });
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-huhong-chrome-'));
-  const chrome = spawn(CHROME_BIN, getChromeArgs(port, userDataDir), { stdio: ['ignore', 'ignore', 'ignore'] });
+  const chrome = spawn(chromeBin, getChromeArgs(port, userDataDir), { stdio: ['ignore', 'ignore', 'ignore'] });
   try {
     const pages = await fetchJson(`http://${DEBUG_HOST}:${port}/json/list`);
     const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl && !String(item.url || '').startsWith('chrome-extension://'))
@@ -517,8 +494,6 @@ async function runAccount(cookieText, index) {
     await sleep(LOAD_WAIT_MS);
 
     const beforeClick = await collectPageState(cdp);
-    const securityGlobals = await collectSecurityGlobals(cdp);
-    const securityDetails = await collectSecurityDetails(cdp);
     const sweepClicks = await sweepActivityPage(cdp);
 
     await sleep(FINAL_WAIT_MS);
@@ -529,8 +504,6 @@ async function runAccount(cookieText, index) {
     console.log(JSON.stringify({
       account: cookieLabel,
       beforeClick,
-      securityGlobals,
-      securityDetails,
       sweepClicks,
       afterClick,
       requests,
@@ -545,29 +518,32 @@ async function runAccount(cookieText, index) {
 }
 
 async function main() {
+  log('', `🔔${SCRIPT_NAME}, 开始!`);
   const cookies = getCookies();
   if (!cookies.length) {
-    console.log('未找到有效账号 Cookie');
+    log('未找到有效账号 Cookie');
     return;
   }
 
-  console.log(`====================共${cookies.length}个京东账号Cookie=================`);
-  console.log(`===========脚本执行时间：${new Date().toISOString()}============`);
+  log(`====================共${cookies.length}个京东账号Cookie=================`);
+  log(`===========脚本执行时间：${new Date().toISOString()}============`);
 
   for (let index = 0; index < cookies.length; index += 1) {
     const cookieText = cookies[index];
     const userName = parseCookies(cookieText).find((item) => item.name === 'pt_pin')?.value || `账号${index + 1}`;
-    console.log(`\n==== 账号${index + 1} ${decodeURIComponent(userName)} ====`);
+    log(`\n==== 账号${index + 1} ${decodeURIComponent(userName)} ====`);
     try {
       await runAccount(cookieText, index + 1);
     } catch (error) {
-      console.log(`账号${index + 1}: 执行失败：${error.message || error}`);
+      log(`账号${index + 1}: 执行失败：${error.message || error}`);
     }
     await sleep(1000);
   }
 }
 
 main().catch((error) => {
-  console.log(`脚本异常：${error.stack || error.message || error}`);
+  log(`脚本异常：${error.stack || error.message || error}`);
   process.exitCode = 1;
+}).finally(() => {
+  done();
 });
