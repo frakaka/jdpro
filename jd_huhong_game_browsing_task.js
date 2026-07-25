@@ -98,6 +98,22 @@ function parseFormBody(postData) {
   return form;
 }
 
+function summarizeRequest(record) {
+  const base = `${record.method || 'GET'} ${record.functionId || '-'} ${record.url || '-'}`;
+  if (!record.form || Object.keys(record.form).length === 0) {
+    return base;
+  }
+  return `${base} | form=${stringifySnippet(record.form, 500)}`;
+}
+
+function summarizeResponse(record) {
+  const base = `${record.status || '-'} ${record.functionId || '-'} ${record.url || '-'}`;
+  if (!record.body) {
+    return base;
+  }
+  return `${base} | body=${record.body}`;
+}
+
 class CdpClient {
   constructor(wsUrl) {
     this.ws = new WebSocket(wsUrl);
@@ -337,7 +353,7 @@ async function sweepActivityPage(cdp) {
       idleRounds = 0;
     }
 
-    console.log(JSON.stringify({
+    $.log(JSON.stringify({
       sweepRound: round + 1,
       roundClicks,
       roundTaskClicks,
@@ -374,6 +390,7 @@ async function runAccount(cookieText, index) {
   if (!chromeBin) {
     throw new Error('未找到 Chrome/Chromium，请配置 JD_HUHONG_CHROME_BIN');
   }
+  $.log(`账号${index} ${cookieLabel}: Chrome => ${chromeBin}`);
   const port = await new Promise((resolve, reject) => {
     const server = net.createServer();
     server.listen(0, DEBUG_HOST, () => {
@@ -382,8 +399,10 @@ async function runAccount(cookieText, index) {
     });
     server.once('error', reject);
   });
+  $.log(`账号${index} ${cookieLabel}: CDP 端口 => ${port}`);
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-huhong-chrome-'));
   const chrome = spawn(chromeBin, getChromeArgs(port, userDataDir), { stdio: ['ignore', 'ignore', 'ignore'] });
+  $.log(`账号${index} ${cookieLabel}: Chrome 已启动，userDataDir => ${userDataDir}`);
   try {
     const pages = await fetchJson(`http://${DEBUG_HOST}:${port}/json/list`);
     const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl && !String(item.url || '').startsWith('chrome-extension://'))
@@ -392,6 +411,7 @@ async function runAccount(cookieText, index) {
     if (!page?.webSocketDebuggerUrl) {
       throw new Error('未找到可连接的 Chrome 页面');
     }
+    $.log(`账号${index} ${cookieLabel}: 连接页面 => ${page.url || 'about:blank'}`);
 
     const cdp = new CdpClient(page.webSocketDebuggerUrl);
     await cdp.connect();
@@ -424,6 +444,7 @@ async function runAccount(cookieText, index) {
         httpOnly: false,
       });
     }
+    $.log(`账号${index} ${cookieLabel}: Cookie 已注入 => ${parseCookies(cookieText).map((item) => item.name).join(', ')}`);
 
     const responseMap = new Map();
     cdp.on('Network.requestWillBeSent', (params) => {
@@ -442,6 +463,7 @@ async function runAccount(cookieText, index) {
       record.url = url.slice(0, 260);
       record.form = parseFormBody(params.request.postData || '');
       responseMap.set(params.requestId, record);
+      $.log(`账号${index} ${cookieLabel}: 请求 => ${summarizeRequest(record)}`);
     });
 
     cdp.on('Network.responseReceived', (params) => {
@@ -459,6 +481,7 @@ async function runAccount(cookieText, index) {
       record.status = params.response.status;
       record.url = url.slice(0, 260);
       responseMap.set(params.requestId, record);
+      $.log(`账号${index} ${cookieLabel}: 响应头 => ${summarizeResponse(record)}`);
     });
 
     cdp.on('Network.loadingFinished', async (params) => {
@@ -468,20 +491,28 @@ async function runAccount(cookieText, index) {
       }
       record.body = await getResponseBody(cdp, params.requestId);
       responseMap.set(params.requestId, record);
+      $.log(`账号${index} ${cookieLabel}: 响应体 => ${summarizeResponse(record)}`);
     });
 
+    $.log(`账号${index} ${cookieLabel}: 开始导航 => ${PAGE_URL}`);
     await cdp.send('Page.navigate', { url: PAGE_URL });
     await sleep(LOAD_WAIT_MS);
+    $.log(`账号${index} ${cookieLabel}: 页面加载等待完成 => ${LOAD_WAIT_MS}ms`);
 
     const beforeClick = await collectPageState(cdp);
+    $.log(`账号${index} ${cookieLabel}: 页面初始状态 => ${stringifySnippet(beforeClick, 800)}`);
     const sweepClicks = await sweepActivityPage(cdp);
+    $.log(`账号${index} ${cookieLabel}: 扫页点击数 => ${sweepClicks}`);
 
     await sleep(FINAL_WAIT_MS);
+    $.log(`账号${index} ${cookieLabel}: 最终等待完成 => ${FINAL_WAIT_MS}ms`);
 
     const afterClick = await collectPageState(cdp);
+    $.log(`账号${index} ${cookieLabel}: 页面最终状态 => ${stringifySnippet(afterClick, 800)}`);
     const requests = Array.from(responseMap.values());
 
-    console.log(JSON.stringify({
+    $.log(`账号${index} ${cookieLabel}: 收集到 API 记录 => ${requests.length}`);
+    $.log(JSON.stringify({
       account: cookieLabel,
       beforeClick,
       sweepClicks,
@@ -491,6 +522,7 @@ async function runAccount(cookieText, index) {
 
     cdp.close();
   } finally {
+    $.log(`账号${index} ${cookieLabel}: 关闭 Chrome`);
     chrome.kill('SIGTERM');
     await sleep(1000);
     fs.rmSync(userDataDir, { recursive: true, force: true });
