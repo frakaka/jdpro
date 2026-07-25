@@ -15,9 +15,15 @@ const { spawn } = require('child_process');
 const WebSocket = require('ws');
 
 const jdCookieNode = require('./jdCookie.js');
+const {
+  Env,
+  getUserName,
+  safeJsonParse,
+  sleep,
+  stringifySnippet,
+} = require('./function/jdHarBeanCommon');
 
-const SCRIPT_NAME = '京东互动游戏任务';
-const START_TIME = Date.now();
+const $ = new Env('京东互动游戏任务');
 const DEBUG_HOST = '127.0.0.1';
 const PAGE_URL = 'https://pro.m.jd.com/mall/active/3fcyrvLZALNPWCEDRvaZJVrzek8v/index.html?babelChannel=ttt106&hybrid_err_view=1&commontitle=no&iconKey=dandanfan';
 const USER_AGENT = 'jdapp;android;15.9.0;;;M/5.0;appBuild/102473;ef/1;ep/%7B%22hdid%22%3A%22JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw%3D%22%2C%22ts%22%3A1784886146757%2C%22ridx%22%3A-1%2C%22cipher%22%3A%7B%22sv%22%3A%22EG%3D%3D%22%2C%22ad%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%2C%22od%22%3A%22YwDvEWTvCzUjZtc1ZI1wDJu2BJu3ZwGjYWG1YtdwZwU1CwYy%22%2C%22ov%22%3A%22Ctq%3D%22%2C%22ud%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%7D%2C%22ciphertype%22%3A5%2C%22version%22%3A%221.2.1%22%2C%22appname%22%3A%22com.jingdong.app.mall%22%7D;jdSupportDarkMode/0;lang/zh_CN;site/CN;elder/2;ccy/CNY;tz/;Mozilla/5.0 (Linux; Android 9; JSN-AL00a Build/HONORJSN-AL00a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36';
@@ -48,19 +54,6 @@ const BROWSE_SETTLE_WAIT_MS = Number(process.env.JD_HUHONG_CHROME_BROWSE_SETTLE_
 const FINAL_WAIT_MS = Number(process.env.JD_HUHONG_CHROME_FINAL_WAIT_MS || DEFAULT_FINAL_WAIT_MS);
 const SWEEP_ROUNDS = Number(process.env.JD_HUHONG_CHROME_SWEEP_ROUNDS || DEFAULT_SWEEP_ROUNDS);
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function log(...messages) {
-  console.log(messages.join('\n'));
-}
-
-function done() {
-  const seconds = ((Date.now() - START_TIME) / 1000).toFixed(3);
-  log('', `🔔${SCRIPT_NAME}, 结束! 🕛 ${seconds} 秒`, '');
-}
-
 function parseCookies(cookieText) {
   return String(cookieText || '')
     .split(';')
@@ -78,19 +71,6 @@ function parseCookies(cookieText) {
 
 function getCookies() {
   return Object.values(jdCookieNode).filter(Boolean);
-}
-
-function short(value, maxLength = 1600) {
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
-}
-
-function safeJson(value) {
-  try {
-    return JSON.parse(value);
-  } catch (error) {
-    return value;
-  }
 }
 
 function parseFunctionId(url) {
@@ -113,7 +93,7 @@ function parseFormBody(postData) {
       form[key] = value ? `${value.slice(0, 12)}...${value.slice(-8)}` : '';
       continue;
     }
-    form[key] = key === 'body' ? safeJson(value) : value;
+    form[key] = key === 'body' ? safeJsonParse(value, value) : value;
   }
   return form;
 }
@@ -200,7 +180,7 @@ async function getResponseBody(cdp, requestId) {
     const text = result.base64Encoded
       ? Buffer.from(result.body || '', 'base64').toString('utf8')
       : result.body || '';
-    return short(safeJson(text));
+    return stringifySnippet(safeJsonParse(text, text), 1600);
   } catch (error) {
     return `<<body unavailable: ${error.message || error}>>`;
   }
@@ -389,7 +369,7 @@ function getChromeArgs(port, userDataDir) {
 }
 
 async function runAccount(cookieText, index) {
-  const cookieLabel = parseCookies(cookieText).find((item) => item.name === 'pt_pin')?.value || `账号${index}`;
+  const cookieLabel = getUserName(cookieText) || `账号${index}`;
   const chromeBin = getChromeBin();
   if (!chromeBin) {
     throw new Error('未找到 Chrome/Chromium，请配置 JD_HUHONG_CHROME_BIN');
@@ -518,32 +498,32 @@ async function runAccount(cookieText, index) {
 }
 
 async function main() {
-  log('', `🔔${SCRIPT_NAME}, 开始!`);
+  $.log('', `🔔${$.name}, 开始!`);
   const cookies = getCookies();
   if (!cookies.length) {
-    log('未找到有效账号 Cookie');
+    $.log('未找到有效账号 Cookie');
     return;
   }
 
-  log(`====================共${cookies.length}个京东账号Cookie=================`);
-  log(`===========脚本执行时间：${new Date().toISOString()}============`);
+  $.log(`====================共${cookies.length}个京东账号Cookie=================`);
+  $.log(`===========脚本执行时间：${new Date().toISOString()}============`);
 
   for (let index = 0; index < cookies.length; index += 1) {
     const cookieText = cookies[index];
-    const userName = parseCookies(cookieText).find((item) => item.name === 'pt_pin')?.value || `账号${index + 1}`;
-    log(`\n==== 账号${index + 1} ${decodeURIComponent(userName)} ====`);
+    const userName = getUserName(cookieText) || `账号${index + 1}`;
+    $.log(`\n==== 账号${index + 1} ${userName} ====`);
     try {
       await runAccount(cookieText, index + 1);
     } catch (error) {
-      log(`账号${index + 1}: 执行失败：${error.message || error}`);
+      $.log(`账号${index + 1}: 执行失败：${error.message || error}`);
     }
     await sleep(1000);
   }
 }
 
 main().catch((error) => {
-  log(`脚本异常：${error.stack || error.message || error}`);
+  $.log(`脚本异常：${error.stack || error.message || error}`);
   process.exitCode = 1;
 }).finally(() => {
-  done();
+  $.done();
 });
