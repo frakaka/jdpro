@@ -2,11 +2,18 @@
 cron:18 0 * * * jd_huhong_game_browsing_task.js
 
 互动游戏浏览任务。
-仅保留 headless Chrome 路线。
+流程来自 files/traffic_jd_huhong_game_browsing_task_filtered.har：
+1. headless Chrome 打开活动页，注入账号 Cookie 并补齐浏览器会话 Cookie。
+2. weGameHome / weGameLottery 执行每日签到。
+3. interactGameRewardJudge / interactGameReward 领取页面即时奖励。
+4. interact_act_invoke(actLoad / recevieAward) 领取经验档位奖励。
+5. apTaskList / apTaskDetail / apStartTaskTime / 浏览落地页 / apDoLimitTimeTask 完成浏览任务。
+6. 浏览后再次领取可领取的经验档位奖励。
 */
 
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -18,16 +25,44 @@ const jdCookieNode = require('./jdCookie.js');
 const {
   Env,
   getUserName,
+  mergeCookieString,
+  postFormApi,
   safeJsonParse,
   sleep,
   stringifySnippet,
 } = require('./function/jdHarBeanCommon');
 
 const $ = new Env('京东互动游戏任务');
+
 const DEBUG_HOST = '127.0.0.1';
-const PAGE_URL = 'https://pro.m.jd.com/mall/active/3fcyrvLZALNPWCEDRvaZJVrzek8v/index.html?babelChannel=ttt106&hybrid_err_view=1&commontitle=no&iconKey=dandanfan';
-const USER_AGENT = 'jdapp;android;15.9.0;;;M/5.0;appBuild/102473;ef/1;ep/%7B%22hdid%22%3A%22JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw%3D%22%2C%22ts%22%3A1784886146757%2C%22ridx%22%3A-1%2C%22cipher%22%3A%7B%22sv%22%3A%22EG%3D%3D%22%2C%22ad%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%2C%22od%22%3A%22YwDvEWTvCzUjZtc1ZI1wDJu2BJu3ZwGjYWG1YtdwZwU1CwYy%22%2C%22ov%22%3A%22Ctq%3D%22%2C%22ud%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%7D%2C%22ciphertype%22%3A5%2C%22version%22%3A%221.2.1%22%2C%22appname%22%3A%22com.jingdong.app.mall%22%7D;jdSupportDarkMode/0;lang/zh_CN;site/CN;elder/2;ccy/CNY;tz/;Mozilla/5.0 (Linux; Android 9; JSN-AL00a Build/HONORJSN-AL00a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36';
-const API_HOST = 'api.m.jd.com';
+const API_ENDPOINT = 'https://api.m.jd.com/api';
+const ORIGIN = 'https://pro.m.jd.com';
+const PAGE_ID = '3fcyrvLZALNPWCEDRvaZJVrzek8v';
+const PAGE_BASE_URL = `${ORIGIN}/mall/active/${PAGE_ID}/index.html`;
+const PAGE_URL = `${PAGE_BASE_URL}?babelChannel=ttt106&hybrid_err_view=1&commontitle=no&iconKey=dandanfan`;
+
+const HOME_LINK_ID = 'MWC_-5cWq-JH1wrPPteH4w';
+const TASK_LINK_ID = '6ylwhxlv346dqlaytc911';
+const INSTANT_REWARD_LINK_ID = 'QKltPCgCHnIo52E2yaoM5w';
+const TASK_AREA = process.env.JD_HUHONG_TASK_AREA || '0_0_0_0';
+
+const CLIENT = 'android';
+const CLIENT_VERSION = '15.9.0';
+const PLATFORM = '3';
+const LOGIN_TYPE = '2';
+const LOGIN_WQ_BIZ = 'wegame';
+const BUILD = '102473';
+const SCREEN = '360*780';
+const NETWORK_TYPE = 'wifi';
+const D_BRAND = 'HONOR';
+const D_MODEL = 'JSN-AL00a';
+const OS_VERSION = '9';
+const PARTNER = 'jingdong';
+const DEFAULT_EID_TOKEN = 'jdd03GYYLHBRIXA53QDDYQZJL373EWRY67WTBMBTUGWQZFOKI2HUROR67PJAVQPH4RQ5UVKGLTDXNOCYMIOIKPLBZ25ITS4AAAAM7SN77BJAAAAAACJQYZ2VBUFQ4EYX';
+const DEFAULT_WG_TOKEN = 'jdd01Y2EXM4ANWNS3YW3MGL7HCHLNONWW26JKDF5EBQIMQOUK63QRH3O7R7NQOGACOC4AFGB7DETKWOXDVOL5K7ZGX7HVVMSBWI4Y6HFMKOA01234567';
+
+const USER_AGENT = process.env.JD_HUHONG_USER_AGENT || 'jdapp;android;15.9.0;;;M/5.0;appBuild/102473;ef/1;ep/%7B%22hdid%22%3A%22JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw%3D%22%2C%22ts%22%3A1784886146757%2C%22ridx%22%3A-1%2C%22cipher%22%3A%7B%22sv%22%3A%22EG%3D%3D%22%2C%22ad%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%2C%22od%22%3A%22YwDvEWTvCzUjZtc1ZI1wDJu2BJu3ZwGjYWG1YtdwZwU1CwYy%22%2C%22ov%22%3A%22Ctq%3D%22%2C%22ud%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%7D%2C%22ciphertype%22%3A5%2C%22version%22%3A%221.2.1%22%2C%22appname%22%3A%22com.jingdong.app.mall%22%7D;jdSupportDarkMode/0;lang/zh_CN;site/CN;elder/2;ccy/CNY;tz/;Mozilla/5.0 (Linux; Android 9; JSN-AL00a Build/HONORJSN-AL00a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36';
+
 const DEFAULT_CHROME_CANDIDATES = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
@@ -42,17 +77,38 @@ const DEFAULT_CHROME_CANDIDATES = [
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
-const DEFAULT_LOAD_WAIT_MS = 15000;
-const DEFAULT_AFTER_CLICK_WAIT_MS = 8000;
-const DEFAULT_BROWSE_SETTLE_WAIT_MS = 12000;
-const DEFAULT_FINAL_WAIT_MS = 25000;
-const DEFAULT_SWEEP_ROUNDS = 6;
+
 const HEADFUL = process.env.JD_HUHONG_CHROME_HEADFUL === '1';
-const LOAD_WAIT_MS = Number(process.env.JD_HUHONG_CHROME_LOAD_MS || DEFAULT_LOAD_WAIT_MS);
-const AFTER_CLICK_WAIT_MS = Number(process.env.JD_HUHONG_CHROME_AFTER_CLICK_MS || DEFAULT_AFTER_CLICK_WAIT_MS);
-const BROWSE_SETTLE_WAIT_MS = Number(process.env.JD_HUHONG_CHROME_BROWSE_SETTLE_MS || DEFAULT_BROWSE_SETTLE_WAIT_MS);
-const FINAL_WAIT_MS = Number(process.env.JD_HUHONG_CHROME_FINAL_WAIT_MS || DEFAULT_FINAL_WAIT_MS);
-const SWEEP_ROUNDS = Number(process.env.JD_HUHONG_CHROME_SWEEP_ROUNDS || DEFAULT_SWEEP_ROUNDS);
+const BOOTSTRAP_WAIT_MS = readPositiveInt(process.env.JD_HUHONG_CHROME_LOAD_MS, 15000);
+const TASK_WAIT_BUFFER_MS = readPositiveInt(process.env.JD_HUHONG_TASK_WAIT_BUFFER_MS, 2500);
+const COMPLETE_RETRY_TIMES = readPositiveInt(process.env.JD_HUHONG_COMPLETE_RETRY_TIMES, 3);
+const STAGE_CLAIM_ROUNDS = readPositiveInt(process.env.JD_HUHONG_STAGE_CLAIM_ROUNDS, 4);
+const MAX_TASKS = readMaxTasks();
+
+function isDebugEnabled() {
+  return process.env.JD_HUHONG_DEBUG === '1';
+}
+
+function readPositiveInt(value, fallback) {
+  const parsedValue = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+}
+
+function readMaxTasks() {
+  const configuredValue = process.env.JD_HUHONG_MAX_TASKS;
+  if (!configuredValue) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return readPositiveInt(configuredValue, Number.POSITIVE_INFINITY);
+}
+
+function formatTaskLimit(value) {
+  return Number.isFinite(value) ? String(value) : '不限制';
+}
+
+function getCookies() {
+  return Object.values(jdCookieNode).filter(Boolean);
+}
 
 function parseCookies(cookieText) {
   return String(cookieText || '')
@@ -60,58 +116,540 @@ function parseCookies(cookieText) {
     .map((item) => item.trim())
     .filter(Boolean)
     .map((item) => {
-      const index = item.indexOf('=');
+      const separatorIndex = item.indexOf('=');
+      if (separatorIndex <= 0) {
+        return null;
+      }
       return {
-        name: item.slice(0, index),
-        value: item.slice(index + 1),
+        name: item.slice(0, separatorIndex),
+        value: item.slice(separatorIndex + 1),
       };
     })
-    .filter((item) => item.name && item.value);
+    .filter((item) => item?.name && item.value);
 }
 
-function getCookies() {
-  return Object.values(jdCookieNode).filter(Boolean);
+function getChromeBin() {
+  return DEFAULT_CHROME_CANDIDATES.find((item) => item && fs.existsSync(item)) || '';
 }
 
-function parseFunctionId(url) {
-  try {
-    return new URL(url).searchParams.get('functionId') || '';
-  } catch (error) {
-    return '';
+function redactValue(key, value) {
+  if (/cookie|token|pt_key|pt_pin/i.test(key)) {
+    return value ? '已隐藏' : value;
   }
+  if (key === 'h5st' && typeof value === 'string') {
+    return value === 'null' ? value : `${value.split(';').slice(0, 4).join(';')};...`;
+  }
+  return value;
 }
 
-function parseFormBody(postData) {
-  const form = {};
-  const params = new URLSearchParams(postData || '');
-  for (const [key, value] of params.entries()) {
-    if (key === 'h5st') {
-      form[key] = value ? `${value.split(';').slice(0, 4).join(';')};...` : '';
+function redactObjectForLog(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'ext' && typeof item === 'string') {
+      const parsedExt = safeJsonParse(item, item);
+      result[key] = redactObjectForLog(parsedExt);
       continue;
     }
-    if (/token|cookie|eid/i.test(key)) {
-      form[key] = value ? `${value.slice(0, 12)}...${value.slice(-8)}` : '';
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      result[key] = redactObjectForLog(item);
       continue;
     }
-    form[key] = key === 'body' ? safeJsonParse(value, value) : value;
+    result[key] = redactValue(key, item);
   }
-  return form;
+  return result;
 }
 
-function summarizeRequest(record) {
-  const base = `${record.method || 'GET'} ${record.functionId || '-'} ${record.url || '-'}`;
-  if (!record.form || Object.keys(record.form).length === 0) {
-    return base;
-  }
-  return `${base} | form=${stringifySnippet(record.form, 500)}`;
+function stringifyForLog(value, maxLength = 1400) {
+  return stringifySnippet(value, isDebugEnabled() ? Math.max(maxLength, 5000) : maxLength);
 }
 
-function summarizeResponse(record) {
-  const base = `${record.status || '-'} ${record.functionId || '-'} ${record.url || '-'}`;
-  if (!record.body) {
-    return base;
+function createDeviceProfile(cookie) {
+  const seed = crypto
+    .createHash('sha256')
+    .update(`${getUserName(cookie)}:${cookie}:jd-huhong-game`)
+    .digest();
+  const digits = Array.from(seed)
+    .map((byte) => String(byte % 10))
+    .join('')
+    .padEnd(32, '0');
+  const eu = digits.slice(0, 16);
+  const fv = digits.slice(16, 32);
+  const aid = crypto
+    .createHash('md5')
+    .update(`${eu}:${fv}:jd-huhong-game`)
+    .digest('hex')
+    .slice(0, 16);
+
+  return {
+    uuid: `${eu}-${fv}`,
+    eu,
+    fv,
+    imei: eu,
+    aid,
+  };
+}
+
+function buildExt(cookie) {
+  const eidToken = process.env.JD_HUHONG_EID_TOKEN || DEFAULT_EID_TOKEN;
+  const wgToken = process.env.JD_HUHONG_WG_TOKEN || DEFAULT_WG_TOKEN;
+  return JSON.stringify({
+    appType: 'jdapp',
+    systemType: 'android',
+    bigScreen: false,
+    'x-api-eid-token': eidToken,
+    'wg-sdk-token': wgToken,
+    pageUrl: PAGE_BASE_URL,
+  });
+}
+
+function buildBaseMeta(cookie, options = {}) {
+  const device = createDeviceProfile(cookie);
+  const meta = {
+    'x-api-eid-token': process.env.JD_HUHONG_EID_TOKEN || DEFAULT_EID_TOKEN,
+    uuid: device.uuid,
+    build: BUILD,
+    screen: SCREEN,
+    networkType: NETWORK_TYPE,
+    d_brand: D_BRAND,
+    d_model: D_MODEL,
+    lang: 'zh_CN',
+    osVersion: OS_VERSION,
+    partner: PARTNER,
+    'wg-sdk-token': process.env.JD_HUHONG_WG_TOKEN || DEFAULT_WG_TOKEN,
+    ext: buildExt(cookie),
+    eufv: '1',
+    eu: device.eu,
+    fv: device.fv,
+    cthr: '1',
+  };
+
+  if (options.includeTaskDeviceFields) {
+    meta.imei = device.imei;
+    meta.aid = device.aid;
+    meta.openudid = '';
+    meta.adid = '';
   }
-  return `${base} | body=${record.body}`;
+
+  return meta;
+}
+
+function buildExtraHeaders() {
+  return {
+    'x-requested-with': 'com.jingdong.app.mall',
+    'x-referer-page': PAGE_BASE_URL,
+  };
+}
+
+async function callActivityApi(cookie, prefix, functionId, body, options = {}) {
+  const extraForm = {
+    t: Date.now(),
+    clientVersion: CLIENT_VERSION,
+    platform: PLATFORM,
+    ...buildBaseMeta(cookie, { includeTaskDeviceFields: options.includeTaskDeviceFields }),
+    ...(options.includeXApiScval2 ? { xAPIScval2: 'lx' } : {}),
+    ...(options.forceNullH5st ? { h5st: 'null' } : {}),
+    ...(options.extraForm || {}),
+  };
+  const appid = options.appid || 'activities_platform';
+  const endpoint = options.endpoint || API_ENDPOINT;
+  const requestLog = {
+    url: `${endpoint}?functionId=${functionId}`,
+    functionId,
+    appid,
+    h5stAppId: options.h5stAppId || '',
+    body,
+    form: redactObjectForLog(extraForm),
+  };
+  $.log(`${prefix}: 请求 => ${functionId} ${stringifyForLog(requestLog, 1800)}`);
+
+  const response = await postFormApi(cookie, {
+    endpoint,
+    functionId,
+    appid,
+    body,
+    client: CLIENT,
+    loginType: LOGIN_TYPE,
+    loginWQBiz: LOGIN_WQ_BIZ,
+    origin: ORIGIN,
+    referer: PAGE_URL,
+    userAgent: USER_AGENT,
+    h5stAppId: options.h5stAppId || '',
+    h5stMode: options.h5stMode || 'h5st41',
+    h5stPageUrl: PAGE_BASE_URL,
+    h5stVersion: '5.3',
+    extraForm,
+    extraHeaders: {
+      ...buildExtraHeaders(),
+      ...(options.extraHeaders || {}),
+    },
+    includeMeta: true,
+  });
+
+  $.log(`${prefix}: 响应头 => ${functionId} HTTP ${response.statusCode}`);
+  $.log(`${prefix}: 响应体 => ${functionId} ${stringifyForLog(response.data, 2200)}`);
+  return response.data;
+}
+
+function getInnerCode(result) {
+  return Number(result?.data?.code ?? result?.code ?? -1);
+}
+
+function getInnerMessage(result) {
+  return result?.data?.errMsg || result?.errMsg || result?.message || result?.msg || '';
+}
+
+function getInnerData(result) {
+  return result?.data?.data;
+}
+
+async function queryHome(cookie, prefix) {
+  return callActivityApi(cookie, prefix, 'weGameHome', {
+    envType: 1,
+    linkId: HOME_LINK_ID,
+    babelChannel: 'ttt106',
+  }, {
+    appid: 'wegame-hub',
+    h5stAppId: '101aa',
+  });
+}
+
+async function signDaily(cookie, prefix) {
+  const homeResult = await queryHome(cookie, prefix);
+  const signMain = homeResult?.data?.signMainVo || {};
+  $.log(`${prefix}: 签到状态 => currentStatus=${signMain.currentStatus ?? '-'}，button=${signMain.buttonText || '-'}`);
+
+  if (Number(signMain.currentStatus) !== 1 && !String(signMain.buttonText || '').includes('立即签到')) {
+    $.log(`${prefix}: 今日签到不可执行或已完成`);
+    return;
+  }
+
+  const lotteryResult = await callActivityApi(cookie, prefix, 'weGameLottery', {
+    envType: 1,
+    linkId: HOME_LINK_ID,
+    status: 1,
+    markStr: '',
+  }, {
+    appid: 'wegame-hub',
+    h5stAppId: '730a6',
+  });
+  $.log(`${prefix}: 每日签到领取 => ${summarizeAwardResult(lotteryResult)}`);
+
+  const refreshedHome = await queryHome(cookie, prefix);
+  const refreshedSignMain = refreshedHome?.data?.signMainVo || {};
+  $.log(`${prefix}: 签到后状态 => currentStatus=${refreshedSignMain.currentStatus ?? '-'}，button=${refreshedSignMain.buttonText || '-'}`);
+}
+
+async function claimInstantReward(cookie, prefix) {
+  const body = {
+    envType: 1,
+    linkId: INSTANT_REWARD_LINK_ID,
+    babelChannel: 'ttt106',
+  };
+  const judgeResult = await callActivityApi(cookie, prefix, 'interactGameRewardJudge', body, {
+    h5stAppId: 'd41f2',
+  });
+  const judgeData = judgeResult?.data;
+  $.log(`${prefix}: 即时奖励判断 => data=${judgeData ?? '-'}，code=${judgeResult?.code ?? '-'}`);
+
+  if (Number(judgeData) !== 1) {
+    return;
+  }
+
+  const rewardResult = await callActivityApi(cookie, prefix, 'interactGameReward', body, {
+    h5stAppId: 'd41f2',
+  });
+  $.log(`${prefix}: 即时奖励领取 => ${stringifyForLog(rewardResult, 1200)}`);
+}
+
+async function loadStageProgress(cookie, prefix) {
+  return callActivityApi(cookie, prefix, 'interact_act_invoke', {
+    envType: 1,
+    linkId: TASK_LINK_ID,
+    actFlowCode: 'actLoad',
+  }, {
+    h5stAppId: 'a2b4f',
+    includeXApiScval2: true,
+    extraHeaders: {
+      'x-rp-client': 'h5_1.0.0',
+    },
+  });
+}
+
+async function claimStageAward(cookie, prefix, stage) {
+  return callActivityApi(cookie, prefix, 'interact_act_invoke', {
+    envType: 1,
+    linkId: TASK_LINK_ID,
+    actFlowCode: 'recevieAward',
+    stage,
+  }, {
+    h5stAppId: 'a2b4f',
+    includeXApiScval2: true,
+    extraHeaders: {
+      'x-rp-client': 'h5_1.0.0',
+    },
+  });
+}
+
+async function claimReadyStageAwards(cookie, prefix, scene) {
+  $.log(`${prefix}: 开始检查经验档位奖励 => ${scene}`);
+  const claimedStages = new Set();
+
+  for (let round = 1; round <= STAGE_CLAIM_ROUNDS; round += 1) {
+    const progressResult = await loadStageProgress(cookie, prefix);
+    const progressData = getInnerData(progressResult) || {};
+    const progressList = Array.isArray(progressData.progressList) ? progressData.progressList : [];
+    $.log(`${prefix}: 档位进度 => ${progressList.map(formatProgressItem).join(' || ') || '空'}`);
+
+    const claimableItems = progressList
+      .filter((item) => Number(item.status) === 1 && item.stage !== undefined && !claimedStages.has(String(item.stage)));
+    if (!claimableItems.length) {
+      return;
+    }
+
+    for (const item of claimableItems) {
+      const stage = item.stage;
+      const claimResult = await claimStageAward(cookie, prefix, stage);
+      claimedStages.add(String(stage));
+      $.log(`${prefix}: 档位${stage}领取 => ${summarizeAwardResult(claimResult)}`);
+      await sleep(1000);
+    }
+  }
+}
+
+function formatProgressItem(item) {
+  return `stage=${item.stage},status=${item.status},score=${item.score},amount=${item.amount}`;
+}
+
+function summarizeAwardResult(result) {
+  const data = getInnerData(result) || result?.data || {};
+  if (data?.awardResultVO) {
+    const award = data.awardResultVO;
+    return `${award.prizeConfigName || award.prizeDesc || '奖励'} amount=${award.amount || data?.awardVo?.awardGivenNumber || '-'} send=${award.sendResult}`;
+  }
+  if (data?.awardVo) {
+    return `${data.awardVo.awardTitle || data.awardVo.awardName || '奖励'} x${data.awardVo.awardGivenNumber || '-'}`;
+  }
+  if (data?.prizeConfigName || data?.prizeDesc || data?.amount) {
+    return `${data.prizeConfigName || data.prizeDesc || '奖励'} amount=${data.amount || '-'} send=${data.sendResult}`;
+  }
+  return stringifyForLog(result, 1000);
+}
+
+async function queryTaskList(cookie, prefix) {
+  return callActivityApi(cookie, prefix, 'apTaskList', {
+    linkId: TASK_LINK_ID,
+    queryType: 0,
+    channel: 4,
+    area: TASK_AREA,
+    platform: 'lingxiao',
+    actFlowCode: 'apTaskList',
+  }, {
+    includeTaskDeviceFields: true,
+    includeXApiScval2: true,
+    forceNullH5st: true,
+  });
+}
+
+async function queryTaskDetail(cookie, prefix, task) {
+  return callActivityApi(cookie, prefix, 'apTaskDetail', {
+    taskType: task?.taskType || 'BROWSE_CHANNEL',
+    taskId: task?.id,
+    channel: 4,
+    checkVersion: true,
+    linkId: TASK_LINK_ID,
+    pipeExt: buildTaskPipeExt(task),
+    actFlowCode: 'apTaskDetail',
+  }, {
+    includeTaskDeviceFields: true,
+    includeXApiScval2: true,
+    forceNullH5st: true,
+  });
+}
+
+async function startTaskTime(cookie, prefix, task, item) {
+  return callActivityApi(cookie, prefix, 'apStartTaskTime', {
+    linkId: TASK_LINK_ID,
+    taskId: task?.id,
+    itemId: getTaskItemUrl(item),
+    pipeExt: buildTaskPipeExt(task, item),
+    channel: 4,
+    actFlowCode: 'apStartTaskTime',
+  }, {
+    appid: 'activity_platform_se',
+    h5stAppId: 'acb1e',
+    includeTaskDeviceFields: true,
+    includeXApiScval2: true,
+  });
+}
+
+async function doLimitTimeTask(cookie, prefix) {
+  return callActivityApi(cookie, prefix, 'apDoLimitTimeTask', {
+    linkId: TASK_LINK_ID,
+    actFlowCode: 'apDoLimitTimeTask',
+  }, {
+    h5stAppId: 'ebecc',
+    includeTaskDeviceFields: true,
+    includeXApiScval2: true,
+  });
+}
+
+function buildTaskPipeExt(task, item = null) {
+  return {
+    ...(task?.pipeExt || {}),
+    ...(item?.pipeExt || {}),
+    taskType: task?.pipeExt?.taskType || task?.taskType || 'BROWSE_CHANNEL',
+  };
+}
+
+function getTaskItemUrl(item) {
+  return String(item?.itemId || item?.itemUrl || '').trim();
+}
+
+function isBrowseTask(task) {
+  const taskType = String(task?.taskType || task?.pipeExt?.taskType || '');
+  return taskType === 'BROWSE_CHANNEL';
+}
+
+function isTaskFinished(task) {
+  if (task?.taskFinished === true || task?.status?.finished === true) {
+    return true;
+  }
+  const doTimes = Number(task?.taskDoTimes ?? task?.status?.userFinishedTimes ?? 0);
+  const limitTimes = Number(task?.taskLimitTimes ?? task?.status?.finishNeed ?? 0);
+  return limitTimes > 0 && doTimes >= limitTimes;
+}
+
+function summarizeTask(task, item = null) {
+  const rewards = (task?.configBaseList || [])
+    .map((reward) => `${reward.awardGivenNumber || '?'}${reward.interactiveAwardName || reward.awardName || reward.awardTitle || '奖励'}`)
+    .join(',');
+  return `${task?.taskShowTitle || task?.taskTitle || task?.taskType || '浏览任务'} | assignmentId=${task?.pipeExt?.assignmentId || '-'} | item=${item?.itemName || '-'} | url=${getTaskItemUrl(item) || '-'} | reward=${rewards || '-'}`;
+}
+
+async function buildPendingBrowseTasks(cookie, prefix) {
+  const taskListResult = await queryTaskList(cookie, prefix);
+  const tasks = Array.isArray(getInnerData(taskListResult)) ? getInnerData(taskListResult) : [];
+  if (!tasks.length) {
+    $.log(`${prefix}: apTaskList 未返回任务 => ${stringifyForLog(taskListResult, 1200)}`);
+    return [];
+  }
+
+  const browseTasks = tasks.filter((task) => isBrowseTask(task));
+  $.log(`${prefix}: 浏览任务总数 => ${browseTasks.length}`);
+
+  const pendingEntries = [];
+  for (const task of browseTasks) {
+    if (isTaskFinished(task)) {
+      $.log(`${prefix}: 浏览任务已完成，跳过 => ${summarizeTask(task)}`);
+      continue;
+    }
+
+    const detailResult = await queryTaskDetail(cookie, prefix, task);
+    if (getInnerCode(detailResult) !== 0) {
+      $.log(`${prefix}: apTaskDetail 异常，跳过 => ${summarizeTask(task)} | ${getInnerMessage(detailResult)}`);
+      continue;
+    }
+
+    const detailData = getInnerData(detailResult) || {};
+    if (detailData.status?.finished) {
+      $.log(`${prefix}: 浏览任务明细已完成，跳过 => ${summarizeTask(task)}`);
+      continue;
+    }
+
+    const items = Array.isArray(detailData.taskItemList) ? detailData.taskItemList : [];
+    const executableItems = items.filter((item) => /^https?:\/\//.test(getTaskItemUrl(item)));
+    if (!executableItems.length) {
+      $.log(`${prefix}: 浏览任务无可访问 item，跳过 => ${summarizeTask(task)}`);
+      continue;
+    }
+
+    for (const item of executableItems) {
+      pendingEntries.push({ task: { ...task, ...detailData, pipeExt: { ...(task.pipeExt || {}), ...(detailData.pipeExt || {}) } }, item });
+    }
+  }
+
+  return pendingEntries;
+}
+
+function extractTimerTaskInfo(startResult, fallbackUrl, fallbackSeconds = 6) {
+  const jumpUrl = getInnerData(startResult)?.jumpUrl || '';
+  const paramsIndex = String(jumpUrl).indexOf('params=');
+  if (paramsIndex < 0) {
+    return {
+      taskUrl: fallbackUrl,
+      seconds: fallbackSeconds,
+      jumpUrl,
+    };
+  }
+
+  const rawParams = String(jumpUrl).slice(paramsIndex + 'params='.length);
+  const parsedParams = safeJsonParse(rawParams, {});
+  return {
+    taskUrl: parsedParams.taskUrl || fallbackUrl,
+    seconds: Number(parsedParams.second || fallbackSeconds),
+    jumpUrl,
+    timerId: parsedParams.timerId || '',
+    uniqId: parsedParams.uniqId || '',
+  };
+}
+
+async function completeBrowseTask(cookie, prefix, browserSession, task, item) {
+  $.log(`${prefix}: 尝试浏览任务 => ${summarizeTask(task, item)}`);
+  const startResult = await startTaskTime(cookie, prefix, task, item);
+  if (getInnerCode(startResult) !== 0) {
+    $.log(`${prefix}: apStartTaskTime 未成功 => code=${getInnerCode(startResult)} msg=${getInnerMessage(startResult)}`);
+    return false;
+  }
+
+  const timerInfo = extractTimerTaskInfo(startResult, getTaskItemUrl(item), Number(task?.timeLimitPeriod || 6));
+  if (!timerInfo.taskUrl) {
+    $.log(`${prefix}: apStartTaskTime 未返回可浏览 taskUrl`);
+    return false;
+  }
+
+  const waitMs = Math.max((Number(timerInfo.seconds) || 6) * 1000 + TASK_WAIT_BUFFER_MS, 8000);
+  $.log(`${prefix}: 浏览落地页 => ${timerInfo.taskUrl}`);
+  $.log(`${prefix}: 计时信息 => timerId=${timerInfo.timerId || '-'} uniqId=${timerInfo.uniqId || '-'} wait=${waitMs}ms`);
+  await visitTaskPage(browserSession.cdp, prefix, timerInfo.taskUrl, waitMs);
+
+  for (let attempt = 1; attempt <= COMPLETE_RETRY_TIMES; attempt += 1) {
+    const limitResult = await doLimitTimeTask(cookie, prefix);
+    const code = getInnerCode(limitResult);
+    $.log(`${prefix}: apDoLimitTimeTask 第${attempt}次结果 => code=${code} ${summarizeAwardResult(limitResult)}`);
+    if (code === 0) {
+      return true;
+    }
+    if (attempt < COMPLETE_RETRY_TIMES) {
+      await sleep(2500);
+    }
+  }
+
+  return false;
+}
+
+async function completeBrowseTasks(cookie, prefix, browserSession) {
+  const allPendingTasks = await buildPendingBrowseTasks(cookie, prefix);
+  const pendingTasks = Number.isFinite(MAX_TASKS) ? allPendingTasks.slice(0, MAX_TASKS) : allPendingTasks;
+  $.log(`${prefix}: 待执行浏览 item 数 => ${pendingTasks.length}，任务上限=${formatTaskLimit(MAX_TASKS)}`);
+
+  let successCount = 0;
+  for (const { task, item } of pendingTasks) {
+    try {
+      const completed = await completeBrowseTask(cookie, prefix, browserSession, task, item);
+      if (completed) {
+        successCount += 1;
+      }
+    } catch (error) {
+      $.log(`${prefix}: 浏览任务异常，继续下一个 => ${summarizeTask(task, item)} | ${error.message || error}`);
+    }
+    await sleep(1000);
+  }
+
+  $.log(`${prefix}: 浏览任务完成统计 => 成功${successCount}/${pendingTasks.length}`);
 }
 
 class CdpClient {
@@ -164,7 +702,7 @@ class CdpClient {
           this.pending.delete(id);
           reject(new Error(`${method} timeout`));
         }
-      }, 20000);
+      }, 25000);
     });
   }
 
@@ -190,183 +728,15 @@ async function fetchJson(url, timeoutMs = 15000) {
   throw lastError || new Error(`fetch timeout: ${url}`);
 }
 
-async function getResponseBody(cdp, requestId) {
-  try {
-    const result = await cdp.send('Network.getResponseBody', { requestId });
-    const text = result.base64Encoded
-      ? Buffer.from(result.body || '', 'base64').toString('utf8')
-      : result.body || '';
-    return stringifySnippet(safeJsonParse(text, text), 1600);
-  } catch (error) {
-    return `<<body unavailable: ${error.message || error}>>`;
-  }
-}
-
-async function collectPageState(cdp) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression: '({href: location.href, readyState: document.readyState, text: document.body ? document.body.innerText.slice(0, 3000) : ""})',
-    returnByValue: true,
+async function getAvailablePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, DEBUG_HOST, () => {
+      const port = server.address().port;
+      server.close(() => resolve(port));
+    });
+    server.once('error', reject);
   });
-  return result.result?.value || {};
-}
-
-async function clickText(cdp, text) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression: `
-      (() => {
-        const targetText = ${JSON.stringify(text)};
-        const nodes = Array.from(document.querySelectorAll('body *'))
-          .filter((node) => {
-            const rect = node.getBoundingClientRect();
-            return rect.width > 0 && rect.height > 0 && node.innerText && node.innerText.includes(targetText);
-          })
-          .sort((a, b) => {
-            const ar = a.getBoundingClientRect();
-            const br = b.getBoundingClientRect();
-            return (ar.width * ar.height) - (br.width * br.height);
-          });
-        const node = nodes[0];
-        if (!node) {
-          return { clicked: false, text: targetText };
-        }
-        node.scrollIntoView({ block: 'center', inline: 'center' });
-        const rect = node.getBoundingClientRect();
-        const x = rect.left + rect.width / 2;
-        const y = rect.top + rect.height / 2;
-        node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-        node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-        node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
-        return {
-          clicked: true,
-          text: targetText,
-          nodeText: node.innerText.slice(0, 120),
-          tagName: node.tagName,
-          rect: { x, y, width: rect.width, height: rect.height },
-        };
-      })()
-    `,
-    awaitPromise: true,
-    returnByValue: true,
-  });
-  return result.result?.value || {};
-}
-
-async function clickTextSeries(cdp, texts, maxClicks = 20) {
-  let clickCount = 0;
-  for (let index = 0; index < maxClicks; index += 1) {
-    let clicked = false;
-    for (const text of texts) {
-      const result = await clickText(cdp, text);
-      if (result.clicked) {
-        clickCount += 1;
-        clicked = true;
-        await sleep(AFTER_CLICK_WAIT_MS);
-        break;
-      }
-    }
-    if (!clicked) {
-      break;
-    }
-  }
-  return clickCount;
-}
-
-async function getScrollMetrics(cdp) {
-  const result = await cdp.send('Runtime.evaluate', {
-    expression: '({innerHeight: window.innerHeight, scrollHeight: document.scrollingElement ? document.scrollingElement.scrollHeight : document.body.scrollHeight})',
-    returnByValue: true,
-  });
-  return result.result?.value || { innerHeight: 0, scrollHeight: 0 };
-}
-
-async function scrollToPosition(cdp, y) {
-  await cdp.send('Runtime.evaluate', {
-    expression: `window.scrollTo(0, ${Math.max(0, Math.floor(y))})`,
-    returnByValue: true,
-  });
-  await sleep(1200);
-}
-
-function getChromeBin() {
-  const configured = String(process.env.JD_HUHONG_CHROME_BIN || '').trim();
-  const candidates = configured ? [configured, ...DEFAULT_CHROME_CANDIDATES] : DEFAULT_CHROME_CANDIDATES;
-  return candidates.find((item) => item && fs.existsSync(item)) || '';
-}
-
-async function harvestCurrentViewport(cdp) {
-  let claimClicks = 0;
-  let taskClicks = 0;
-
-  claimClicks += await clickTextSeries(cdp, ['领取', '去领取'], 8);
-  taskClicks += await clickTextSeries(cdp, ['去完成', '去浏览', '完成'], 12);
-  claimClicks += await clickTextSeries(cdp, ['领取', '去领取'], 8);
-
-  return {
-    claimClicks,
-    taskClicks,
-    totalClicks: claimClicks + taskClicks,
-  };
-}
-
-async function sweepActivityPage(cdp) {
-  let totalClicks = 0;
-  await clickTextSeries(cdp, ['立即签到'], 2);
-  await clickTextSeries(cdp, ['签到'], 2);
-  await clickTextSeries(cdp, ['攒经验'], 2);
-
-  let idleRounds = 0;
-  for (let round = 0; round < SWEEP_ROUNDS; round += 1) {
-    const metrics = await getScrollMetrics(cdp);
-    const step = Math.max(Math.floor((metrics.innerHeight || 780) * 0.8), 420);
-    let roundClicks = 0;
-    let roundTaskClicks = 0;
-    let roundClaimClicks = 0;
-
-    for (let y = 0; y <= metrics.scrollHeight; y += step) {
-      await scrollToPosition(cdp, y);
-      const viewportResult = await harvestCurrentViewport(cdp);
-      roundClicks += viewportResult.totalClicks;
-      roundTaskClicks += viewportResult.taskClicks;
-      roundClaimClicks += viewportResult.claimClicks;
-    }
-
-    await scrollToPosition(cdp, 0);
-    {
-      const viewportResult = await harvestCurrentViewport(cdp);
-      roundClicks += viewportResult.totalClicks;
-      roundTaskClicks += viewportResult.taskClicks;
-      roundClaimClicks += viewportResult.claimClicks;
-    }
-
-    if (roundTaskClicks > 0) {
-      await sleep(BROWSE_SETTLE_WAIT_MS);
-      const settleResult = await harvestCurrentViewport(cdp);
-      roundClicks += settleResult.totalClicks;
-      roundTaskClicks += settleResult.taskClicks;
-      roundClaimClicks += settleResult.claimClicks;
-    }
-
-    totalClicks += roundClicks;
-    if (roundClicks === 0) {
-      idleRounds += 1;
-    } else {
-      idleRounds = 0;
-    }
-
-    $.log(JSON.stringify({
-      sweepRound: round + 1,
-      roundClicks,
-      roundTaskClicks,
-      roundClaimClicks,
-      idleRounds,
-    }));
-
-    if (idleRounds >= 2) {
-      break;
-    }
-  }
-
-  return totalClicks;
 }
 
 function getChromeArgs(port, userDataDir) {
@@ -384,148 +754,178 @@ function getChromeArgs(port, userDataDir) {
   return args;
 }
 
-async function runAccount(cookieText, index) {
-  const cookieLabel = getUserName(cookieText) || `账号${index}`;
+async function connectChromePage(port) {
+  const pages = await fetchJson(`http://${DEBUG_HOST}:${port}/json/list`);
+  const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl && !String(item.url || '').startsWith('chrome-extension://'))
+    || pages.find((item) => item.webSocketDebuggerUrl)
+    || pages[0];
+  if (!page?.webSocketDebuggerUrl) {
+    throw new Error('未找到可连接的 Chrome 页面');
+  }
+
+  const cdp = new CdpClient(page.webSocketDebuggerUrl);
+  await cdp.connect();
+  await cdp.send('Page.enable');
+  await cdp.send('Runtime.enable');
+  await cdp.send('Network.enable');
+  await cdp.send('Emulation.setUserAgentOverride', {
+    userAgent: USER_AGENT,
+    platform: 'Android',
+    acceptLanguage: 'zh-CN,zh;q=0.9',
+  });
+  await cdp.send('Emulation.setDeviceMetricsOverride', {
+    width: 360,
+    height: 780,
+    deviceScaleFactor: 3,
+    mobile: true,
+  });
+  await cdp.send('Emulation.setTouchEmulationEnabled', {
+    enabled: true,
+    configuration: 'mobile',
+  });
+
+  return cdp;
+}
+
+async function injectCookies(cdp, cookieText, prefix) {
+  const cookies = parseCookies(cookieText);
+  for (const cookie of cookies) {
+    await cdp.send('Network.setCookie', {
+      name: cookie.name,
+      value: cookie.value,
+      domain: '.jd.com',
+      path: '/',
+      secure: true,
+      httpOnly: false,
+    });
+  }
+  $.log(`${prefix}: Cookie 已注入 => ${cookies.map((item) => item.name).join(', ')}`);
+}
+
+async function getBrowserCookieString(cdp) {
+  const result = await cdp.send('Network.getAllCookies');
+  const cookieMap = new Map();
+  for (const cookie of result.cookies || []) {
+    if (!String(cookie.domain || '').includes('jd.com') || !cookie.name || !cookie.value) {
+      continue;
+    }
+    cookieMap.set(cookie.name, cookie.value);
+  }
+  return Array.from(cookieMap.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+}
+
+async function bootstrapBrowserSession(cookieText, prefix) {
   const chromeBin = getChromeBin();
   if (!chromeBin) {
-    throw new Error('未找到 Chrome/Chromium，请配置 JD_HUHONG_CHROME_BIN');
+    throw new Error('未找到 Chrome/Chromium，请确认 DEFAULT_CHROME_CANDIDATES 覆盖当前系统路径');
   }
-  $.log(`账号${index} ${cookieLabel}: Chrome => ${chromeBin}`);
-  const port = await new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.listen(0, DEBUG_HOST, () => {
-      const value = server.address().port;
-      server.close(() => resolve(value));
-    });
-    server.once('error', reject);
-  });
-  $.log(`账号${index} ${cookieLabel}: CDP 端口 => ${port}`);
+
+  const port = await getAvailablePort();
   const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jd-huhong-chrome-'));
   const chrome = spawn(chromeBin, getChromeArgs(port, userDataDir), { stdio: ['ignore', 'ignore', 'ignore'] });
-  $.log(`账号${index} ${cookieLabel}: Chrome 已启动，userDataDir => ${userDataDir}`);
+  $.log(`${prefix}: Chrome => ${chromeBin}`);
+  $.log(`${prefix}: CDP 端口 => ${port}`);
+  $.log(`${prefix}: Chrome 已启动，userDataDir => ${userDataDir}`);
+
+  let cdp = null;
   try {
-    const pages = await fetchJson(`http://${DEBUG_HOST}:${port}/json/list`);
-    const page = pages.find((item) => item.type === 'page' && item.webSocketDebuggerUrl && !String(item.url || '').startsWith('chrome-extension://'))
-      || pages.find((item) => item.webSocketDebuggerUrl)
-      || pages[0];
-    if (!page?.webSocketDebuggerUrl) {
-      throw new Error('未找到可连接的 Chrome 页面');
-    }
-    $.log(`账号${index} ${cookieLabel}: 连接页面 => ${page.url || 'about:blank'}`);
-
-    const cdp = new CdpClient(page.webSocketDebuggerUrl);
-    await cdp.connect();
-    await cdp.send('Page.enable');
-    await cdp.send('Runtime.enable');
-    await cdp.send('Network.enable');
-    await cdp.send('Emulation.setUserAgentOverride', {
-      userAgent: USER_AGENT,
-      platform: 'Android',
-      acceptLanguage: 'zh-CN,zh;q=0.9',
-    });
-    await cdp.send('Emulation.setDeviceMetricsOverride', {
-      width: 360,
-      height: 780,
-      deviceScaleFactor: 3,
-      mobile: true,
-    });
-    await cdp.send('Emulation.setTouchEmulationEnabled', {
-      enabled: true,
-      configuration: 'mobile',
-    });
-
-    for (const cookie of parseCookies(cookieText)) {
-      await cdp.send('Network.setCookie', {
-        name: cookie.name,
-        value: cookie.value,
-        domain: '.jd.com',
-        path: '/',
-        secure: true,
-        httpOnly: false,
-      });
-    }
-    $.log(`账号${index} ${cookieLabel}: Cookie 已注入 => ${parseCookies(cookieText).map((item) => item.name).join(', ')}`);
-
-    const responseMap = new Map();
-    cdp.on('Network.requestWillBeSent', (params) => {
-      const url = params.request?.url || '';
-      if (!url.includes(API_HOST)) {
-        return;
-      }
-      const functionId = parseFunctionId(url);
-      if (!functionId) {
-        return;
-      }
-      const record = responseMap.get(params.requestId) || {};
-      record.type = 'request';
-      record.functionId = functionId;
-      record.method = params.request.method;
-      record.url = url.slice(0, 260);
-      record.form = parseFormBody(params.request.postData || '');
-      responseMap.set(params.requestId, record);
-      $.log(`账号${index} ${cookieLabel}: 请求 => ${summarizeRequest(record)}`);
-    });
-
-    cdp.on('Network.responseReceived', (params) => {
-      const url = params.response?.url || '';
-      if (!url.includes(API_HOST)) {
-        return;
-      }
-      const functionId = parseFunctionId(url);
-      if (!functionId) {
-        return;
-      }
-      const record = responseMap.get(params.requestId) || {};
-      record.type = 'response';
-      record.functionId = functionId;
-      record.status = params.response.status;
-      record.url = url.slice(0, 260);
-      responseMap.set(params.requestId, record);
-      $.log(`账号${index} ${cookieLabel}: 响应头 => ${summarizeResponse(record)}`);
-    });
-
-    cdp.on('Network.loadingFinished', async (params) => {
-      const record = responseMap.get(params.requestId);
-      if (!record || record.body) {
-        return;
-      }
-      record.body = await getResponseBody(cdp, params.requestId);
-      responseMap.set(params.requestId, record);
-      $.log(`账号${index} ${cookieLabel}: 响应体 => ${summarizeResponse(record)}`);
-    });
-
-    $.log(`账号${index} ${cookieLabel}: 开始导航 => ${PAGE_URL}`);
+    cdp = await connectChromePage(port);
+    await injectCookies(cdp, cookieText, prefix);
+    $.log(`${prefix}: 开始导航活动页 => ${PAGE_URL}`);
     await cdp.send('Page.navigate', { url: PAGE_URL });
-    await sleep(LOAD_WAIT_MS);
-    $.log(`账号${index} ${cookieLabel}: 页面加载等待完成 => ${LOAD_WAIT_MS}ms`);
+    await sleep(BOOTSTRAP_WAIT_MS);
+    $.log(`${prefix}: 活动页加载等待完成 => ${BOOTSTRAP_WAIT_MS}ms`);
 
-    const beforeClick = await collectPageState(cdp);
-    $.log(`账号${index} ${cookieLabel}: 页面初始状态 => ${stringifySnippet(beforeClick, 800)}`);
-    const sweepClicks = await sweepActivityPage(cdp);
-    $.log(`账号${index} ${cookieLabel}: 扫页点击数 => ${sweepClicks}`);
+    const browserCookieString = await getBrowserCookieString(cdp);
+    const activityCookie = mergeCookieString(browserCookieString, cookieText);
+    const cookieNames = parseCookies(activityCookie).map((item) => item.name);
+    $.log(`${prefix}: 浏览器会话 Cookie 捕获 => ${cookieNames.join(', ')}`);
 
-    await sleep(FINAL_WAIT_MS);
-    $.log(`账号${index} ${cookieLabel}: 最终等待完成 => ${FINAL_WAIT_MS}ms`);
-
-    const afterClick = await collectPageState(cdp);
-    $.log(`账号${index} ${cookieLabel}: 页面最终状态 => ${stringifySnippet(afterClick, 800)}`);
-    const requests = Array.from(responseMap.values());
-
-    $.log(`账号${index} ${cookieLabel}: 收集到 API 记录 => ${requests.length}`);
-    $.log(JSON.stringify({
-      account: cookieLabel,
-      beforeClick,
-      sweepClicks,
-      afterClick,
-      requests,
-    }, null, 2));
-
-    cdp.close();
-  } finally {
-    $.log(`账号${index} ${cookieLabel}: 关闭 Chrome`);
-    chrome.kill('SIGTERM');
-    await sleep(1000);
+    return {
+      cdp,
+      chrome,
+      userDataDir,
+      activityCookie,
+    };
+  } catch (error) {
+    try {
+      cdp?.close();
+    } catch (closeError) {
+      $.log(`${prefix}: CDP 关闭异常 => ${closeError.message || closeError}`);
+    }
+    if (!chrome.killed) {
+      chrome.kill('SIGTERM');
+    }
     fs.rmSync(userDataDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function visitTaskPage(cdp, prefix, taskUrl, waitMs) {
+  await cdp.send('Page.navigate', { url: taskUrl });
+  await sleep(Math.min(3000, waitMs));
+  const state = await collectPageState(cdp);
+  $.log(`${prefix}: 浏览页状态 => ${stringifyForLog(state, 1000)}`);
+  const remainingWait = Math.max(waitMs - Math.min(3000, waitMs), 0);
+  if (remainingWait > 0) {
+    await sleep(remainingWait);
+  }
+}
+
+async function collectPageState(cdp) {
+  try {
+    const result = await cdp.send('Runtime.evaluate', {
+      expression: '({href: location.href, readyState: document.readyState, title: document.title, text: document.body ? document.body.innerText.slice(0, 500) : ""})',
+      returnByValue: true,
+    });
+    return result.result?.value || {};
+  } catch (error) {
+    return { error: error.message || String(error) };
+  }
+}
+
+async function closeBrowserSession(session, prefix) {
+  if (!session) {
+    return;
+  }
+
+  try {
+    session.cdp?.close();
+  } catch (error) {
+    $.log(`${prefix}: CDP 关闭异常 => ${error.message || error}`);
+  }
+
+  if (session.chrome && !session.chrome.killed) {
+    session.chrome.kill('SIGTERM');
+  }
+  await sleep(1000);
+  if (session.userDataDir) {
+    fs.rmSync(session.userDataDir, { recursive: true, force: true });
+  }
+  $.log(`${prefix}: Chrome 已关闭`);
+}
+
+async function runAccount(cookieText, index) {
+  const userName = getUserName(cookieText) || `账号${index}`;
+  const prefix = `账号${index} ${userName}`;
+  $.log(`\n==== ${prefix} ====`);
+
+  let browserSession = null;
+  try {
+    browserSession = await bootstrapBrowserSession(cookieText, prefix);
+    const activityCookie = browserSession.activityCookie;
+
+    await signDaily(activityCookie, prefix);
+    await claimInstantReward(activityCookie, prefix);
+    await claimReadyStageAwards(activityCookie, prefix, '浏览任务前');
+    await completeBrowseTasks(activityCookie, prefix, browserSession);
+    await claimReadyStageAwards(activityCookie, prefix, '浏览任务后');
+    await claimInstantReward(activityCookie, prefix);
+    await queryHome(activityCookie, prefix);
+  } finally {
+    await closeBrowserSession(browserSession, prefix);
   }
 }
 
@@ -541,21 +941,18 @@ async function main() {
   $.log(`===========脚本执行时间：${new Date().toISOString()}============`);
 
   for (let index = 0; index < cookies.length; index += 1) {
-    const cookieText = cookies[index];
-    const userName = getUserName(cookieText) || `账号${index + 1}`;
-    $.log(`\n==== 账号${index + 1} ${userName} ====`);
     try {
-      await runAccount(cookieText, index + 1);
+      await runAccount(cookies[index], index + 1);
     } catch (error) {
-      $.log(`账号${index + 1}: 执行失败：${error.message || error}`);
+      $.log(`账号${index + 1}: 执行失败：${error.stack || error.message || error}`);
     }
     await sleep(1000);
   }
 }
 
-main().catch((error) => {
-  $.log(`脚本异常：${error.stack || error.message || error}`);
-  process.exitCode = 1;
-}).finally(() => {
-  $.done();
-});
+main()
+  .catch((error) => {
+    $.log(`脚本异常：${error.stack || error.message || error}`);
+    process.exitCode = 1;
+  })
+  .finally(() => $.done());
