@@ -26,7 +26,6 @@ const {
   Env,
   getUserName,
   mergeCookieString,
-  postFormApi,
   safeJsonParse,
   sleep,
   stringifySnippet,
@@ -60,6 +59,7 @@ const OS_VERSION = '9';
 const PARTNER = 'jingdong';
 const DEFAULT_EID_TOKEN = 'jdd03GYYLHBRIXA53QDDYQZJL373EWRY67WTBMBTUGWQZFOKI2HUROR67PJAVQPH4RQ5UVKGLTDXNOCYMIOIKPLBZ25ITS4AAAAM7SN77BJAAAAAACJQYZ2VBUFQ4EYX';
 const DEFAULT_WG_TOKEN = 'jdd01Y2EXM4ANWNS3YW3MGL7HCHLNONWW26JKDF5EBQIMQOUK63QRH3O7R7NQOGACOC4AFGB7DETKWOXDVOL5K7ZGX7HVVMSBWI4Y6HFMKOA01234567';
+const DEFAULT_JS_SECURITY_SCRIPT_URL = 'https://storage.360buyimg.com/webcontainer/js_security_v3_0.1.5.js?v=2406';
 
 const USER_AGENT = process.env.JD_HUHONG_USER_AGENT || 'jdapp;android;15.9.0;;;M/5.0;appBuild/102473;ef/1;ep/%7B%22hdid%22%3A%22JM9F1ywUPwflvMIpYPok0tt5k9kW4ArJEU3lfLhxBqw%3D%22%2C%22ts%22%3A1784886146757%2C%22ridx%22%3A-1%2C%22cipher%22%3A%7B%22sv%22%3A%22EG%3D%3D%22%2C%22ad%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%2C%22od%22%3A%22YwDvEWTvCzUjZtc1ZI1wDJu2BJu3ZwGjYWG1YtdwZwU1CwYy%22%2C%22ov%22%3A%22Ctq%3D%22%2C%22ud%22%3A%22CWYyCNZsEJVwYwHvDwTuCK%3D%3D%22%7D%2C%22ciphertype%22%3A5%2C%22version%22%3A%221.2.1%22%2C%22appname%22%3A%22com.jingdong.app.mall%22%7D;jdSupportDarkMode/0;lang/zh_CN;site/CN;elder/2;ccy/CNY;tz/;Mozilla/5.0 (Linux; Android 9; JSN-AL00a Build/HONORJSN-AL00a; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.136 Mobile Safari/537.36';
 
@@ -80,6 +80,7 @@ const DEFAULT_CHROME_CANDIDATES = [
 
 const HEADFUL = process.env.JD_HUHONG_CHROME_HEADFUL === '1';
 const BOOTSTRAP_WAIT_MS = readPositiveInt(process.env.JD_HUHONG_CHROME_LOAD_MS, 15000);
+const CHROME_EVALUATE_TIMEOUT_MS = readPositiveInt(process.env.JD_HUHONG_CHROME_EVALUATE_TIMEOUT_MS, 45000);
 const TASK_WAIT_BUFFER_MS = readPositiveInt(process.env.JD_HUHONG_TASK_WAIT_BUFFER_MS, 2500);
 const COMPLETE_RETRY_TIMES = readPositiveInt(process.env.JD_HUHONG_COMPLETE_RETRY_TIMES, 3);
 const STAGE_CLAIM_ROUNDS = readPositiveInt(process.env.JD_HUHONG_STAGE_CLAIM_ROUNDS, 4);
@@ -244,54 +245,55 @@ function buildExtraHeaders() {
   };
 }
 
-async function callActivityApi(cookie, prefix, functionId, body, options = {}) {
+async function callActivityApi(cdp, cookie, prefix, functionId, body, options = {}) {
   const extraForm = {
     t: Date.now(),
+    appid: options.appid || 'activities_platform',
+    functionId,
+    body,
+    client: CLIENT,
     clientVersion: CLIENT_VERSION,
     platform: PLATFORM,
+    loginType: LOGIN_TYPE,
+    loginWQBiz: LOGIN_WQ_BIZ,
     ...buildBaseMeta(cookie, { includeTaskDeviceFields: options.includeTaskDeviceFields }),
     ...(options.includeXApiScval2 ? { xAPIScval2: 'lx' } : {}),
     ...(options.forceNullH5st ? { h5st: 'null' } : {}),
     ...(options.extraForm || {}),
   };
-  const appid = options.appid || 'activities_platform';
   const endpoint = options.endpoint || API_ENDPOINT;
+  const payload = {
+    endpoint,
+    functionId,
+    body,
+    appid: options.appid || 'activities_platform',
+    h5stAppId: options.h5stAppId || '',
+    nullH5st: Boolean(options.forceNullH5st),
+    extraForm,
+    extraHeaders: {
+      ...buildExtraHeaders(),
+      ...(options.extraHeaders || {}),
+    },
+  };
   const requestLog = {
     url: `${endpoint}?functionId=${functionId}`,
     functionId,
-    appid,
+    appid: payload.appid,
     h5stAppId: options.h5stAppId || '',
     body,
     form: redactObjectForLog(extraForm),
   };
   $.log(`${prefix}: 请求 => ${functionId} ${stringifyForLog(requestLog, 1800)}`);
 
-  const response = await postFormApi(cookie, {
-    endpoint,
-    functionId,
-    appid,
-    body,
-    client: CLIENT,
-    loginType: LOGIN_TYPE,
-    loginWQBiz: LOGIN_WQ_BIZ,
-    origin: ORIGIN,
-    referer: PAGE_URL,
-    userAgent: USER_AGENT,
-    h5stAppId: options.h5stAppId || '',
-    h5stMode: options.h5stMode || 'h5st41',
-    h5stPageUrl: PAGE_BASE_URL,
-    h5stVersion: '5.3',
-    extraForm,
-    extraHeaders: {
-      ...buildExtraHeaders(),
-      ...(options.extraHeaders || {}),
-    },
-    includeMeta: true,
-  });
+  const response = await chromePostApi(cdp, payload, prefix);
+  $.log(`${prefix}: Chrome请求 => ${functionId} ${stringifyForLog(redactObjectForLog(response.request || {}), 1800)}`);
+  $.log(`${prefix}: 响应头 => ${functionId} HTTP ${response.status}`);
+  $.log(`${prefix}: 响应体 => ${functionId} ${stringifyForLog(response.response?.parsed, 2200)}`);
+  if (isDebugEnabled()) {
+    $.log(`${prefix}: 原始响应 => ${functionId} ${stringifyForLog(response.response?.raw || '', 3000)}`);
+  }
 
-  $.log(`${prefix}: 响应头 => ${functionId} HTTP ${response.statusCode}`);
-  $.log(`${prefix}: 响应体 => ${functionId} ${stringifyForLog(response.data, 2200)}`);
-  return response.data;
+  return response.response?.parsed;
 }
 
 function getInnerCode(result) {
@@ -306,8 +308,8 @@ function getInnerData(result) {
   return result?.data?.data;
 }
 
-async function queryHome(cookie, prefix) {
-  return callActivityApi(cookie, prefix, 'weGameHome', {
+async function queryHome(cdp, cookie, prefix) {
+  return callActivityApi(cdp, cookie, prefix, 'weGameHome', {
     envType: 1,
     linkId: HOME_LINK_ID,
     babelChannel: 'ttt106',
@@ -317,8 +319,8 @@ async function queryHome(cookie, prefix) {
   });
 }
 
-async function signDaily(cookie, prefix) {
-  const homeResult = await queryHome(cookie, prefix);
+async function signDaily(cdp, cookie, prefix) {
+  const homeResult = await queryHome(cdp, cookie, prefix);
   const signMain = homeResult?.data?.signMainVo || {};
   $.log(`${prefix}: 签到状态 => currentStatus=${signMain.currentStatus ?? '-'}，button=${signMain.buttonText || '-'}`);
 
@@ -327,29 +329,32 @@ async function signDaily(cookie, prefix) {
     return;
   }
 
-  const lotteryResult = await callActivityApi(cookie, prefix, 'weGameLottery', {
+  const markStr = signMain.markStr || '';
+  $.log(`${prefix}: 签到 markStr => ${markStr ? '已获取' : '空'}`);
+
+  const lotteryResult = await callActivityApi(cdp, cookie, prefix, 'weGameLottery', {
     envType: 1,
     linkId: HOME_LINK_ID,
     status: 1,
-    markStr: '',
+    markStr,
   }, {
     appid: 'wegame-hub',
     h5stAppId: '730a6',
   });
   $.log(`${prefix}: 每日签到领取 => ${summarizeAwardResult(lotteryResult)}`);
 
-  const refreshedHome = await queryHome(cookie, prefix);
+  const refreshedHome = await queryHome(cdp, cookie, prefix);
   const refreshedSignMain = refreshedHome?.data?.signMainVo || {};
   $.log(`${prefix}: 签到后状态 => currentStatus=${refreshedSignMain.currentStatus ?? '-'}，button=${refreshedSignMain.buttonText || '-'}`);
 }
 
-async function claimInstantReward(cookie, prefix) {
+async function claimInstantReward(cdp, cookie, prefix) {
   const body = {
     envType: 1,
     linkId: INSTANT_REWARD_LINK_ID,
     babelChannel: 'ttt106',
   };
-  const judgeResult = await callActivityApi(cookie, prefix, 'interactGameRewardJudge', body, {
+  const judgeResult = await callActivityApi(cdp, cookie, prefix, 'interactGameRewardJudge', body, {
     h5stAppId: 'd41f2',
   });
   const judgeData = judgeResult?.data;
@@ -359,14 +364,14 @@ async function claimInstantReward(cookie, prefix) {
     return;
   }
 
-  const rewardResult = await callActivityApi(cookie, prefix, 'interactGameReward', body, {
+  const rewardResult = await callActivityApi(cdp, cookie, prefix, 'interactGameReward', body, {
     h5stAppId: 'd41f2',
   });
   $.log(`${prefix}: 即时奖励领取 => ${stringifyForLog(rewardResult, 1200)}`);
 }
 
-async function loadStageProgress(cookie, prefix) {
-  return callActivityApi(cookie, prefix, 'interact_act_invoke', {
+async function loadStageProgress(cdp, cookie, prefix) {
+  return callActivityApi(cdp, cookie, prefix, 'interact_act_invoke', {
     envType: 1,
     linkId: TASK_LINK_ID,
     actFlowCode: 'actLoad',
@@ -379,8 +384,8 @@ async function loadStageProgress(cookie, prefix) {
   });
 }
 
-async function claimStageAward(cookie, prefix, stage) {
-  return callActivityApi(cookie, prefix, 'interact_act_invoke', {
+async function claimStageAward(cdp, cookie, prefix, stage) {
+  return callActivityApi(cdp, cookie, prefix, 'interact_act_invoke', {
     envType: 1,
     linkId: TASK_LINK_ID,
     actFlowCode: 'recevieAward',
@@ -394,12 +399,12 @@ async function claimStageAward(cookie, prefix, stage) {
   });
 }
 
-async function claimReadyStageAwards(cookie, prefix, scene) {
+async function claimReadyStageAwards(cdp, cookie, prefix, scene) {
   $.log(`${prefix}: 开始检查经验档位奖励 => ${scene}`);
   const claimedStages = new Set();
 
   for (let round = 1; round <= STAGE_CLAIM_ROUNDS; round += 1) {
-    const progressResult = await loadStageProgress(cookie, prefix);
+    const progressResult = await loadStageProgress(cdp, cookie, prefix);
     const progressData = getInnerData(progressResult) || {};
     const progressList = Array.isArray(progressData.progressList) ? progressData.progressList : [];
     $.log(`${prefix}: 档位进度 => ${progressList.map(formatProgressItem).join(' || ') || '空'}`);
@@ -412,7 +417,7 @@ async function claimReadyStageAwards(cookie, prefix, scene) {
 
     for (const item of claimableItems) {
       const stage = item.stage;
-      const claimResult = await claimStageAward(cookie, prefix, stage);
+      const claimResult = await claimStageAward(cdp, cookie, prefix, stage);
       claimedStages.add(String(stage));
       $.log(`${prefix}: 档位${stage}领取 => ${summarizeAwardResult(claimResult)}`);
       await sleep(1000);
@@ -439,8 +444,8 @@ function summarizeAwardResult(result) {
   return stringifyForLog(result, 1000);
 }
 
-async function queryTaskList(cookie, prefix) {
-  return callActivityApi(cookie, prefix, 'apTaskList', {
+async function queryTaskList(cdp, cookie, prefix) {
+  return callActivityApi(cdp, cookie, prefix, 'apTaskList', {
     linkId: TASK_LINK_ID,
     queryType: 0,
     channel: 4,
@@ -454,8 +459,8 @@ async function queryTaskList(cookie, prefix) {
   });
 }
 
-async function queryTaskDetail(cookie, prefix, task) {
-  return callActivityApi(cookie, prefix, 'apTaskDetail', {
+async function queryTaskDetail(cdp, cookie, prefix, task) {
+  return callActivityApi(cdp, cookie, prefix, 'apTaskDetail', {
     taskType: task?.taskType || 'BROWSE_CHANNEL',
     taskId: task?.id,
     channel: 4,
@@ -470,8 +475,8 @@ async function queryTaskDetail(cookie, prefix, task) {
   });
 }
 
-async function startTaskTime(cookie, prefix, task, item) {
-  return callActivityApi(cookie, prefix, 'apStartTaskTime', {
+async function startTaskTime(cdp, cookie, prefix, task, item) {
+  return callActivityApi(cdp, cookie, prefix, 'apStartTaskTime', {
     linkId: TASK_LINK_ID,
     taskId: task?.id,
     itemId: getTaskItemUrl(item),
@@ -481,18 +486,16 @@ async function startTaskTime(cookie, prefix, task, item) {
   }, {
     appid: 'activity_platform_se',
     h5stAppId: 'acb1e',
-    includeTaskDeviceFields: true,
     includeXApiScval2: true,
   });
 }
 
-async function doLimitTimeTask(cookie, prefix) {
-  return callActivityApi(cookie, prefix, 'apDoLimitTimeTask', {
+async function doLimitTimeTask(cdp, cookie, prefix) {
+  return callActivityApi(cdp, cookie, prefix, 'apDoLimitTimeTask', {
     linkId: TASK_LINK_ID,
     actFlowCode: 'apDoLimitTimeTask',
   }, {
     h5stAppId: 'ebecc',
-    includeTaskDeviceFields: true,
     includeXApiScval2: true,
   });
 }
@@ -530,8 +533,8 @@ function summarizeTask(task, item = null) {
   return `${task?.taskShowTitle || task?.taskTitle || task?.taskType || '浏览任务'} | assignmentId=${task?.pipeExt?.assignmentId || '-'} | item=${item?.itemName || '-'} | url=${getTaskItemUrl(item) || '-'} | reward=${rewards || '-'}`;
 }
 
-async function buildPendingBrowseTasks(cookie, prefix) {
-  const taskListResult = await queryTaskList(cookie, prefix);
+async function buildPendingBrowseTasks(cdp, cookie, prefix) {
+  const taskListResult = await queryTaskList(cdp, cookie, prefix);
   const tasks = Array.isArray(getInnerData(taskListResult)) ? getInnerData(taskListResult) : [];
   if (!tasks.length) {
     $.log(`${prefix}: apTaskList 未返回任务 => ${stringifyForLog(taskListResult, 1200)}`);
@@ -548,7 +551,7 @@ async function buildPendingBrowseTasks(cookie, prefix) {
       continue;
     }
 
-    const detailResult = await queryTaskDetail(cookie, prefix, task);
+    const detailResult = await queryTaskDetail(cdp, cookie, prefix, task);
     if (getInnerCode(detailResult) !== 0) {
       $.log(`${prefix}: apTaskDetail 异常，跳过 => ${summarizeTask(task)} | ${getInnerMessage(detailResult)}`);
       continue;
@@ -599,7 +602,7 @@ function extractTimerTaskInfo(startResult, fallbackUrl, fallbackSeconds = 6) {
 
 async function completeBrowseTask(cookie, prefix, browserSession, task, item) {
   $.log(`${prefix}: 尝试浏览任务 => ${summarizeTask(task, item)}`);
-  const startResult = await startTaskTime(cookie, prefix, task, item);
+  const startResult = await startTaskTime(browserSession.cdp, cookie, prefix, task, item);
   if (getInnerCode(startResult) !== 0) {
     $.log(`${prefix}: apStartTaskTime 未成功 => code=${getInnerCode(startResult)} msg=${getInnerMessage(startResult)}`);
     return false;
@@ -617,7 +620,7 @@ async function completeBrowseTask(cookie, prefix, browserSession, task, item) {
   await visitTaskPage(browserSession.cdp, prefix, timerInfo.taskUrl, waitMs);
 
   for (let attempt = 1; attempt <= COMPLETE_RETRY_TIMES; attempt += 1) {
-    const limitResult = await doLimitTimeTask(cookie, prefix);
+    const limitResult = await doLimitTimeTask(browserSession.cdp, cookie, prefix);
     const code = getInnerCode(limitResult);
     $.log(`${prefix}: apDoLimitTimeTask 第${attempt}次结果 => code=${code} ${summarizeAwardResult(limitResult)}`);
     if (code === 0) {
@@ -632,7 +635,7 @@ async function completeBrowseTask(cookie, prefix, browserSession, task, item) {
 }
 
 async function completeBrowseTasks(cookie, prefix, browserSession) {
-  const allPendingTasks = await buildPendingBrowseTasks(cookie, prefix);
+  const allPendingTasks = await buildPendingBrowseTasks(browserSession.cdp, cookie, prefix);
   const pendingTasks = Number.isFinite(MAX_TASKS) ? allPendingTasks.slice(0, MAX_TASKS) : allPendingTasks;
   $.log(`${prefix}: 待执行浏览 item 数 => ${pendingTasks.length}，任务上限=${formatTaskLimit(MAX_TASKS)}`);
 
@@ -691,7 +694,7 @@ class CdpClient {
     this.handlers.set(method, handlers);
   }
 
-  send(method, params = {}) {
+  send(method, params = {}, timeoutMs = 25000) {
     const id = this.nextId;
     this.nextId += 1;
     this.ws.send(JSON.stringify({ id, method, params }));
@@ -702,7 +705,7 @@ class CdpClient {
           this.pending.delete(id);
           reject(new Error(`${method} timeout`));
         }
-      }, 25000);
+      }, timeoutMs);
     });
   }
 
@@ -785,6 +788,250 @@ async function connectChromePage(port) {
   });
 
   return cdp;
+}
+
+async function evaluateChrome(cdp, expression, timeoutMs = CHROME_EVALUATE_TIMEOUT_MS) {
+  const result = await cdp.send('Runtime.evaluate', {
+    expression,
+    awaitPromise: true,
+    returnByValue: true,
+  }, timeoutMs);
+  if (result?.exceptionDetails) {
+    const exception = result.exceptionDetails.exception?.description
+      || result.exceptionDetails.text
+      || 'Chrome Runtime.evaluate 执行异常';
+    throw new Error(exception);
+  }
+  return result?.result?.value;
+}
+
+function buildChromeRuntimeBootstrapScript(input) {
+  return `(${async function bootstrapHuhongRuntime(runtimeInput) {
+    if (window.__jdHuhongRuntime) {
+      return { ok: true, reused: true, href: location.href };
+    }
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const safeJson = (text) => {
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        return text ? { raw: text } : {};
+      }
+    };
+    const cookieMap = () => new Map(document.cookie.split(';').map((item) => {
+      const trimmed = item.trim();
+      const index = trimmed.indexOf('=');
+      if (index <= 0) {
+        return ['', ''];
+      }
+      return [trimmed.slice(0, index), trimmed.slice(index + 1)];
+    }));
+    const setCookie = (rawCookie) => {
+      String(rawCookie || '')
+        .split(';')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .forEach((item) => {
+          const index = item.indexOf('=');
+          if (index <= 0) {
+            return;
+          }
+          const key = item.slice(0, index).trim();
+          const value = item.slice(index + 1).trim();
+          if (key) {
+            document.cookie = `${key}=${value}; domain=.jd.com; path=/`;
+          }
+        });
+    };
+    const waitFor = async (predicate, timeoutMs, label) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
+        if (predicate()) {
+          return;
+        }
+        await sleep(200);
+      }
+      throw new Error(`等待运行态超时: ${label}`);
+    };
+    const loadScript = (url, timeoutMs) => new Promise((resolve, reject) => {
+      const existingScript = Array.from(document.scripts).find((script) => script.src === url);
+      if (existingScript && existingScript.dataset.loaded === '1') {
+        resolve();
+        return;
+      }
+      const script = existingScript || document.createElement('script');
+      const timer = setTimeout(() => reject(new Error(`加载脚本超时: ${url}`)), timeoutMs);
+      script.onload = () => {
+        clearTimeout(timer);
+        script.dataset.loaded = '1';
+        resolve();
+      };
+      script.onerror = () => {
+        clearTimeout(timer);
+        reject(new Error(`加载脚本失败: ${url}`));
+      };
+      if (!existingScript) {
+        script.src = url;
+        document.head.appendChild(script);
+      }
+    });
+    const ensureSignRuntime = async () => {
+      try {
+        await waitFor(() => typeof window.ParamsSignLite === 'function', 8000, 'ParamsSignLite');
+      } catch (error) {
+        await loadScript(runtimeInput.jsSecurityScriptUrl, 15000);
+        await waitFor(() => typeof window.ParamsSignLite === 'function', runtimeInput.signRuntimeTimeoutMs, 'ParamsSignLite');
+      }
+    };
+    const getJsToken = () => new Promise((resolve) => {
+      const fallbackToken = cookieMap().get('3AB9D23F7A4B3CSS') || runtimeInput.defaultEidToken || '';
+      try {
+        if (typeof window.getJsToken !== 'function') {
+          resolve(fallbackToken);
+          return;
+        }
+        window.getJsToken((result) => resolve(result?.jsToken || fallbackToken), 15000);
+      } catch (error) {
+        resolve(fallbackToken);
+      }
+    });
+    const normalizeFormValue = (value) => {
+      if (value === undefined || value === null) {
+        return '';
+      }
+      if (typeof value === 'object') {
+        return JSON.stringify(value);
+      }
+      return String(value);
+    };
+    const buildApiUrl = (payload) => {
+      const url = new URL(payload.endpoint || runtimeInput.apiEndpoint);
+      url.searchParams.set('functionId', payload.functionId);
+      return url.toString();
+    };
+    const buildForm = (formFields) => Object.entries(formFields)
+      .filter(([, value]) => value !== undefined && value !== null && value !== '')
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(normalizeFormValue(value))}`)
+      .join('&');
+
+    window.__jdHuhongRuntime = {
+      setCookie,
+      async postApi(payload) {
+        if (payload.cookie && payload.syncCookie) {
+          setCookie(payload.cookie);
+        }
+
+        const timestamp = Number(payload.extraForm?.t || 0) || Date.now();
+        const bodyText = JSON.stringify(payload.body || {});
+        let h5st = payload.nullH5st ? 'null' : '';
+        if (!payload.nullH5st && payload.h5stAppId) {
+          await ensureSignRuntime();
+          const signer = new window.ParamsSignLite({ appId: payload.h5stAppId });
+          const signResult = await signer.sign({
+            functionId: payload.functionId,
+            appid: payload.appid || runtimeInput.appid,
+            client: runtimeInput.client,
+            t: String(timestamp),
+            body: bodyText,
+            clientVersion: runtimeInput.clientVersion,
+          });
+          h5st = signResult?.h5st || '';
+        }
+
+        const eidToken = await getJsToken();
+        const formFields = {
+          ...(payload.extraForm || {}),
+          t: timestamp,
+          appid: payload.appid || runtimeInput.appid,
+          functionId: payload.functionId,
+          body: bodyText,
+          client: runtimeInput.client,
+          clientVersion: runtimeInput.clientVersion,
+          h5st,
+          'x-api-eid-token': eidToken || payload.extraForm?.['x-api-eid-token'] || '',
+          ext: {
+            appType: 'jdapp',
+            systemType: 'android',
+            bigScreen: false,
+            'x-api-eid-token': eidToken || payload.extraForm?.['x-api-eid-token'] || '',
+            'wg-sdk-token': payload.extraForm?.['wg-sdk-token'] || runtimeInput.defaultWgToken,
+            pageUrl: runtimeInput.pageUrl,
+          },
+        };
+        const form = buildForm(formFields);
+        const url = buildApiUrl(payload);
+        const response = await fetch(url, {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-requested-with': 'com.jingdong.app.mall',
+            'x-referer-page': runtimeInput.pageUrl,
+            ...(payload.extraHeaders || {}),
+          },
+          body: form,
+        });
+        const rawText = await response.text();
+        const sdTokenHeader = response.headers.get('x-rp-sdtoken') || '';
+        const sdToken = sdTokenHeader.split(';')[2] ? sdTokenHeader.split(';')[2].trim() : '';
+        if (sdToken) {
+          document.cookie = `sdtoken=${sdToken}; domain=.jd.com; path=/`;
+        }
+
+        return {
+          status: response.status,
+          request: {
+            functionId: payload.functionId,
+            url,
+            body: payload.body || {},
+            formFields,
+            formLength: form.length,
+            h5stLength: String(h5st || '').length,
+          },
+          response: {
+            headers: {
+              'x-rp-sdtoken': sdTokenHeader,
+              'x-api-request-id': response.headers.get('x-api-request-id') || '',
+              'x-mlaas-at': response.headers.get('x-mlaas-at') || '',
+            },
+            parsed: safeJson(rawText),
+            raw: rawText,
+          },
+        };
+      },
+    };
+
+    return { ok: true, reused: false, href: location.href };
+  }})(${JSON.stringify(input)})`;
+}
+
+async function prepareActivityRuntime(cdp, prefix) {
+  const state = await collectPageState(cdp);
+  if (!String(state.href || '').startsWith(ORIGIN)) {
+    $.log(`${prefix}: 返回活动页准备接口请求 => ${PAGE_URL}`);
+    await cdp.send('Page.navigate', { url: PAGE_URL });
+    await sleep(3000);
+  }
+
+  const result = await evaluateChrome(cdp, buildChromeRuntimeBootstrapScript({
+    apiEndpoint: API_ENDPOINT,
+    appid: 'activities_platform',
+    client: CLIENT,
+    clientVersion: CLIENT_VERSION,
+    pageUrl: PAGE_BASE_URL,
+    defaultEidToken: process.env.JD_HUHONG_EID_TOKEN || DEFAULT_EID_TOKEN,
+    defaultWgToken: process.env.JD_HUHONG_WG_TOKEN || DEFAULT_WG_TOKEN,
+    jsSecurityScriptUrl: DEFAULT_JS_SECURITY_SCRIPT_URL,
+    signRuntimeTimeoutMs: CHROME_EVALUATE_TIMEOUT_MS,
+  }));
+  $.log(`${prefix}: Chrome运行时 => reused=${result?.reused ?? '-'} href=${result?.href || '-'}`);
+}
+
+async function chromePostApi(cdp, payload, prefix) {
+  await prepareActivityRuntime(cdp, prefix);
+  const expression = `(async () => window.__jdHuhongRuntime.postApi(${JSON.stringify(payload)}))()`;
+  return evaluateChrome(cdp, expression, CHROME_EVALUATE_TIMEOUT_MS);
 }
 
 async function injectCookies(cdp, cookieText, prefix) {
@@ -917,13 +1164,13 @@ async function runAccount(cookieText, index) {
     browserSession = await bootstrapBrowserSession(cookieText, prefix);
     const activityCookie = browserSession.activityCookie;
 
-    await signDaily(activityCookie, prefix);
-    await claimInstantReward(activityCookie, prefix);
-    await claimReadyStageAwards(activityCookie, prefix, '浏览任务前');
+    await signDaily(browserSession.cdp, activityCookie, prefix);
+    await claimInstantReward(browserSession.cdp, activityCookie, prefix);
+    await claimReadyStageAwards(browserSession.cdp, activityCookie, prefix, '浏览任务前');
     await completeBrowseTasks(activityCookie, prefix, browserSession);
-    await claimReadyStageAwards(activityCookie, prefix, '浏览任务后');
-    await claimInstantReward(activityCookie, prefix);
-    await queryHome(activityCookie, prefix);
+    await claimReadyStageAwards(browserSession.cdp, activityCookie, prefix, '浏览任务后');
+    await claimInstantReward(browserSession.cdp, activityCookie, prefix);
+    await queryHome(browserSession.cdp, activityCookie, prefix);
   } finally {
     await closeBrowserSession(browserSession, prefix);
   }
