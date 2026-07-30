@@ -657,10 +657,12 @@ async function completeBrowseTasks(cookie, prefix, browserSession) {
 
 class CdpClient {
   constructor(wsUrl) {
+    this.wsUrl = wsUrl;
     this.ws = new WebSocket(wsUrl);
     this.nextId = 1;
     this.pending = new Map();
     this.handlers = new Map();
+    this.closed = false;
   }
 
   async connect() {
@@ -668,11 +670,23 @@ class CdpClient {
       this.ws.once('open', resolve);
       this.ws.once('error', reject);
     });
+    this.ws.once('close', () => {
+      this.closed = true;
+      this.rejectPending(new Error('Chrome DevTools 连接已关闭'));
+    });
+    this.ws.once('error', (error) => {
+      this.closed = true;
+      this.rejectPending(error);
+    });
     this.ws.on('message', (raw) => {
-      const message = JSON.parse(String(raw));
+      const message = safeJsonParse(String(raw), null);
+      if (!message) {
+        return;
+      }
       if (message.id && this.pending.has(message.id)) {
         const entry = this.pending.get(message.id);
         this.pending.delete(message.id);
+        clearTimeout(entry.timer);
         if (message.error) {
           entry.reject(new Error(message.error.message));
         } else {
@@ -695,22 +709,44 @@ class CdpClient {
   }
 
   send(method, params = {}, timeoutMs = 25000) {
+    if (this.closed || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('Chrome DevTools 连接不可用'));
+    }
+
     const id = this.nextId;
     this.nextId += 1;
-    this.ws.send(JSON.stringify({ id, method, params }));
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           reject(new Error(`${method} timeout`));
         }
       }, timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.ws.send(JSON.stringify({ id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 
   close() {
-    this.ws.close();
+    this.closed = true;
+    this.rejectPending(new Error('Chrome DevTools 连接已关闭'));
+    if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+      this.ws.close();
+    }
+  }
+
+  rejectPending(error) {
+    for (const [id, entry] of this.pending.entries()) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+      this.pending.delete(id);
+    }
   }
 }
 
@@ -803,6 +839,11 @@ async function evaluateChrome(cdp, expression, timeoutMs = CHROME_EVALUATE_TIMEO
     throw new Error(exception);
   }
   return result?.result?.value;
+}
+
+function isTransientChromeError(error) {
+  return /Inspected target navigated or closed|Execution context was destroyed|Cannot find context with specified id|Chrome DevTools 连接不可用|Chrome DevTools 连接已关闭|Target closed/i
+    .test(String(error?.message || error || ''));
 }
 
 function buildChromeRuntimeBootstrapScript(input) {
@@ -1011,7 +1052,7 @@ async function prepareActivityRuntime(cdp, prefix) {
   if (!String(state.href || '').startsWith(ORIGIN)) {
     $.log(`${prefix}: 返回活动页准备接口请求 => ${PAGE_URL}`);
     await cdp.send('Page.navigate', { url: PAGE_URL });
-    await sleep(3000);
+    await waitForActivityPageReady(cdp, prefix);
   }
 
   const result = await evaluateChrome(cdp, buildChromeRuntimeBootstrapScript({
@@ -1028,10 +1069,39 @@ async function prepareActivityRuntime(cdp, prefix) {
   $.log(`${prefix}: Chrome运行时 => reused=${result?.reused ?? '-'} href=${result?.href || '-'}`);
 }
 
+async function waitForActivityPageReady(cdp, prefix) {
+  const startedAt = Date.now();
+  let lastState = {};
+
+  while (Date.now() - startedAt < BOOTSTRAP_WAIT_MS) {
+    lastState = await collectPageState(cdp);
+    if (String(lastState.href || '').startsWith(ORIGIN) && lastState.readyState === 'complete') {
+      return;
+    }
+    await sleep(500);
+  }
+
+  $.log(`${prefix}: 活动页等待后状态 => ${stringifyForLog(lastState, 800)}`);
+}
+
 async function chromePostApi(cdp, payload, prefix) {
-  await prepareActivityRuntime(cdp, prefix);
   const expression = `(async () => window.__jdHuhongRuntime.postApi(${JSON.stringify(payload)}))()`;
-  return evaluateChrome(cdp, expression, CHROME_EVALUATE_TIMEOUT_MS);
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await prepareActivityRuntime(cdp, prefix);
+      return await evaluateChrome(cdp, expression, CHROME_EVALUATE_TIMEOUT_MS);
+    } catch (error) {
+      if (!isTransientChromeError(error) || attempt >= maxAttempts) {
+        throw error;
+      }
+      $.log(`${prefix}: Chrome上下文切换，重试接口 ${payload.functionId} 第${attempt + 1}次 => ${error.message || error}`);
+      await sleep(3000);
+    }
+  }
+
+  throw new Error(`${payload.functionId} Chrome请求重试失败`);
 }
 
 async function injectCookies(cdp, cookieText, prefix) {

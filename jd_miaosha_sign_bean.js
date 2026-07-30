@@ -4,22 +4,21 @@ cron:23 0 * * * jd_miaosha_sign_bean.js
 京东秒杀签到领京豆。
 
 流程来自 files/jd_miaosha_sign_filtered.har：
-1. secEntryBenefitReceive 尝试领取秒杀入口权益。
-2. findBeanSceneNew 查询秒杀京豆签到状态和动态任务 ID。
-3. bff_rightsCenter_interaction 执行 beanDailySign 签到。
-4. findBeanSceneNew 复查京豆数、连续签到天数和任务状态。
+1. headless Chrome 打开秒杀签到页并注入账号 Cookie。
+2. 页面原生逻辑生成风控参数和 h5st。
+3. 点击签到/领取按钮。
+4. 通过 CDP 打印关键 request/response，方便分析实际签到接口。
 
 环境变量：
 1. JD_MIAOSHA_SIGN_DEBUG=1 打印更长 request/response。
-2. JD_MIAOSHA_SIGN_SKIP_ENTRY=1 跳过秒杀入口权益领取。
-3. JD_MIAOSHA_SIGN_SKIP_PRE=1 跳过 interact_pre_executor 状态探测。
+2. JD_MIAOSHA_SIGN_CHROME_BIN 可选，指定 Chrome/Chromium 可执行文件。
 */
 
 'use strict';
 
-const got = require('got');
 const childProcess = require('child_process');
 const fs = require('fs');
+const got = require('got');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -27,9 +26,6 @@ const WebSocket = require('ws');
 const jdCookieNode = require('./jdCookie.js');
 const {
   Env,
-  buildHeaders,
-  createH5st,
-  getRequestUuid,
   getUserName,
   parseCookieString,
   safeJsonParse,
@@ -50,19 +46,7 @@ const ORIGIN = 'https://pro.m.jd.com';
 const PAGE_ID = 'Md9FMi1pJXg2q7qc8CmE9FNYDS4';
 const PAGE_BASE_URL = `${ORIGIN}/mall/active/${PAGE_ID}/index.html`;
 const PAGE_REFERER = `${PAGE_BASE_URL}?babelChannel=ttt1&hybrid_err_view=1&has_native=0&linkTag=miaosha&actSecTraffic=1`;
-const API_ENDPOINT = 'https://api.m.jd.com/client.action';
 
-const CLIENT_VERSION = '15.9.30';
-const BUILD = '170613';
-const SCREEN = '390*676';
-const NETWORK_TYPE = 'wifi';
-const D_MODEL = 'iPhone14,5';
-const OS_VERSION = '26.2';
-const DEFAULT_AREA = '18_1482_3606_60000';
-const DEFAULT_LNG = 113.036891;
-const DEFAULT_LAT = 28.210264;
-const REQUEST_TIMEOUT_MS = 20000;
-const RETRY_WAIT_MS = 1500;
 const CHROME_DEBUG_HOST = '127.0.0.1';
 const CHROME_START_TIMEOUT_MS = 15000;
 const CHROME_COMMAND_TIMEOUT_MS = 20000;
@@ -88,45 +72,6 @@ const DEFAULT_CHROME_CANDIDATES = [
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
 
-const API_CONFIG = {
-  preExecutor: {
-    functionId: 'interact_pre_executor',
-    appid: 'signed_wh5',
-    client: 'ios',
-    h5stAppId: '581c8',
-    extraForm: {
-      channelCode: 'wh5',
-      sceneCode: 'miaosha',
-    },
-  },
-  entryBenefit: {
-    functionId: 'secEntryBenefitReceive',
-    appid: 'signed_wh5',
-    client: 'ios',
-    h5stAppId: '8f29c',
-  },
-  queryScene: {
-    functionId: 'findBeanSceneNew',
-    appid: 'signed_wh5_ihub',
-    client: 'apple',
-    h5stAppId: 'ed9a2',
-    extraForm: {
-      build: BUILD,
-      area: DEFAULT_AREA,
-      uemps: '0-2-0',
-    },
-  },
-  sign: {
-    functionId: 'bff_rightsCenter_interaction',
-    appid: 'signed_wh5',
-    client: 'ios',
-    h5stAppId: '90b26',
-    extraForm: {
-      sceneType: 'activity',
-    },
-  },
-};
-
 const cookies = Object.values(jdCookieNode).filter(Boolean);
 
 $.log('', `🔔${$.name}, 开始!`);
@@ -137,22 +82,6 @@ function isDebugEnabled() {
 
 function stringifyForLog(value, maxLength = 1600) {
   return stringifySnippet(value, isDebugEnabled() ? Math.max(maxLength, 6000) : maxLength);
-}
-
-function appendFormValue(form, key, value) {
-  if (value !== undefined && value !== null && value !== '') {
-    form.set(key, String(value));
-  }
-}
-
-function getCookieValue(cookie, key) {
-  return parseCookieString(cookie).get(key) || '';
-}
-
-function getUuid(cookie) {
-  return process.env.JD_MIAOSHA_SIGN_UUID
-    || getCookieValue(cookie, '__jdu')
-    || getRequestUuid(cookie);
 }
 
 function getUserAgent(userName) {
@@ -171,128 +100,25 @@ function getUserAgent(userName) {
   return USER_AGENT;
 }
 
-async function getTokenInfo(userAgent) {
-  if (process.env.JD_MIAOSHA_SIGN_EID_TOKEN) {
-    return {
-      eid: process.env.JD_MIAOSHA_SIGN_EID || '',
-      token: process.env.JD_MIAOSHA_SIGN_EID_TOKEN,
-    };
-  }
-
-  try {
-    if (typeof dylib?.jddToken === 'function') {
-      const tokenInfo = await dylib.jddToken(userAgent);
-      return {
-        eid: tokenInfo?.eid || '',
-        token: tokenInfo?.token || '',
-      };
-    }
-  } catch (error) {
-    return { eid: '', token: '' };
-  }
-
-  return { eid: '', token: '' };
-}
-
-async function createRuntime(cookie, index) {
+function createRuntime(cookie, index) {
   const userName = getUserName(cookie);
   const userAgent = getUserAgent(userName);
-  const tokenInfo = await getTokenInfo(userAgent);
   return {
     index,
     cookie,
     userName,
     userAgent,
-    uuid: getUuid(cookie),
-    eid: process.env.JD_MIAOSHA_SIGN_EID || tokenInfo.eid || '',
-    eidToken: process.env.JD_MIAOSHA_SIGN_EID_TOKEN || tokenInfo.token || '',
   };
 }
 
-function redactValue(key, value) {
-  if (/cookie|token|pt_key|pt_pin/i.test(key)) {
-    return value ? '已隐藏' : value;
-  }
-  if (key === 'h5st' && typeof value === 'string') {
-    return `${value.split(';').slice(0, 4).join(';')};...`;
-  }
-  return value;
-}
-
-function redactObjectForLog(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return value;
-  }
-
-  const result = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (item && typeof item === 'object' && !Array.isArray(item)) {
-      result[key] = redactObjectForLog(item);
-      continue;
-    }
-    result[key] = redactValue(key, item);
-  }
-  return result;
-}
-
-function buildMetaForm(runtime, apiConfig) {
-  const meta = {
-    screen: SCREEN,
-    networkType: NETWORK_TYPE,
-    openudid: runtime.uuid,
-    uuid: runtime.uuid,
-    clientVersion: CLIENT_VERSION,
-    d_model: D_MODEL,
-    osVersion: OS_VERSION,
-    eid: runtime.eid,
-    'x-api-eid-token': runtime.eidToken,
-  };
-
-  if (apiConfig.client === 'apple') {
-    meta.build = BUILD;
-    meta.area = DEFAULT_AREA;
-    meta.uemps = '0-2-0';
-    meta.ext = JSON.stringify({
-      appType: 'jdapp',
-      systemType: 'ios',
-      pageUrl: PAGE_BASE_URL,
-    });
-  }
-
-  return meta;
-}
-
-async function buildSignedForm(runtime, apiConfig, body) {
-  const bodyText = typeof body === 'string' ? body : JSON.stringify(body || {});
-  const form = new URLSearchParams();
-
-  appendFormValue(form, 'functionId', apiConfig.functionId);
-  appendFormValue(form, 'body', bodyText);
-  appendFormValue(form, 'appid', apiConfig.appid);
-  appendFormValue(form, 'client', apiConfig.client);
-
-  const meta = {
-    ...buildMetaForm(runtime, apiConfig),
-    ...(apiConfig.extraForm || {}),
-  };
-  for (const [key, value] of Object.entries(meta)) {
-    appendFormValue(form, key, value);
-  }
-
-  const h5st = await createH5st({
-    functionId: apiConfig.functionId,
-    body: body || {},
-    h5stAppId: apiConfig.h5stAppId,
-    requestAppid: apiConfig.appid,
-    cookie: runtime.cookie,
-    userAgent: runtime.userAgent,
-    client: apiConfig.client,
-    clientVersion: CLIENT_VERSION,
-    version: '5.3',
-  });
-  appendFormValue(form, 'h5st', h5st);
-
-  return form;
+function redactTextForLog(value) {
+  return String(value || '')
+    .replace(/pt_key=[^;&\s]+/g, 'pt_key=已隐藏')
+    .replace(/pt_pin=[^;&\s]+/g, 'pt_pin=已隐藏')
+    .replace(/(x-api-eid-token=)[^&\s]+/ig, '$1已隐藏')
+    .replace(/(h5st=)[^&\s]+/ig, '$1已隐藏')
+    .replace(/("x-api-eid-token"\s*:\s*")[^"]+/ig, '$1已隐藏')
+    .replace(/("h5st"\s*:\s*")[^"]+/ig, '$1已隐藏');
 }
 
 function decodeMaybeBase64(content) {
@@ -310,50 +136,6 @@ function decodeMaybeBase64(content) {
   } catch (error) {
     return text;
   }
-}
-
-function parseResponseBody(rawBody) {
-  const decodedBody = decodeMaybeBase64(rawBody);
-  return safeJsonParse(decodedBody, decodedBody);
-}
-
-function buildRequestHeaders(runtime) {
-  return buildHeaders(runtime.cookie, {
-    origin: ORIGIN,
-    referer: PAGE_REFERER,
-    userAgent: runtime.userAgent,
-    extraHeaders: {
-      Accept: '*/*',
-      'x-referer-page': PAGE_BASE_URL,
-    },
-  });
-}
-
-function logRequest(runtime, apiConfig, url, form) {
-  const requestLog = {
-    url,
-    method: 'POST',
-    form: redactObjectForLog(Object.fromEntries(form.entries())),
-    headers: {
-      Origin: ORIGIN,
-      Referer: PAGE_REFERER,
-      'User-Agent': runtime.userAgent,
-      Cookie: '已隐藏',
-    },
-  };
-  $.log(`账号${runtime.index} ${runtime.userName}: 请求 => ${apiConfig.functionId} ${stringifyForLog(requestLog)}`);
-}
-
-function logResponse(runtime, apiConfig, response, body) {
-  $.log(`账号${runtime.index} ${runtime.userName}: 响应 => ${apiConfig.functionId} ${stringifyForLog({
-    statusCode: response.statusCode,
-    headers: {
-      'content-type': response.headers['content-type'],
-      'x-api-request-id': response.headers['x-api-request-id'],
-      'x-api-wl-message': response.headers['x-api-wl-message'],
-    },
-    body,
-  }, 2200)}`);
 }
 
 function getChromeBin() {
@@ -493,9 +275,9 @@ class ChromeCdpPage {
       method: request.method,
       postData: request.postData || '',
     });
-    this.logger(`Chrome 请求 => ${request.method} ${request.url}`);
+    this.logger(`Chrome 请求 => ${request.method} ${redactTextForLog(request.url)}`);
     if (request.postData) {
-      this.logger(`Chrome 请求体 => ${stringifyForLog(request.postData, 1800)}`);
+      this.logger(`Chrome 请求体 => ${stringifyForLog(redactTextForLog(request.postData), 1800)}`);
     }
   }
 
@@ -508,7 +290,7 @@ class ChromeCdpPage {
     const response = params.response || {};
     meta.status = response.status;
     meta.mimeType = response.mimeType || '';
-    this.logger(`Chrome 响应头 => HTTP ${response.status} ${meta.method} ${meta.url}`);
+    this.logger(`Chrome 响应头 => HTTP ${response.status} ${meta.method} ${redactTextForLog(meta.url)}`);
   }
 
   handleLoadingFinished(params) {
@@ -520,7 +302,7 @@ class ChromeCdpPage {
     this.send('Network.getResponseBody', { requestId: params.requestId }, 5000)
       .then((result) => {
         const body = decodeChromeBody(result.body || '', Boolean(result.base64Encoded));
-        this.logger(`Chrome 响应体 => ${stringifyForLog(body, 2200)}`);
+        this.logger(`Chrome 响应体 => ${stringifyForLog(redactTextForLog(body), 2200)}`);
       })
       .catch((error) => {
         this.logger(`Chrome 响应体获取失败 => ${error.message || error}`);
@@ -536,7 +318,7 @@ class ChromeCdpPage {
       return;
     }
 
-    this.logger(`Chrome 请求失败 => ${params.errorText || '-'} ${meta.method} ${meta.url}`);
+    this.logger(`Chrome 请求失败 => ${params.errorText || '-'} ${meta.method} ${redactTextForLog(meta.url)}`);
     this.requestMap.delete(params.requestId);
   }
 
@@ -697,11 +479,11 @@ function getPageStateExpression() {
 function getClickSignExpression() {
   return `(() => {
     const keywords = ['签到', '最高得', '领京豆', '立即领取', '领取'];
-    const nodes = Array.from(document.querySelectorAll('button, a, div, span, p'))
-      .map((node) => {
-        const rect = node.getBoundingClientRect();
-        const text = (node.innerText || node.textContent || '').replace(/\\s+/g, ' ').trim();
-        return { node, rect, text };
+    const elements = Array.from(document.querySelectorAll('button, a, div, span, p'))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const text = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+        return { element, rect, text };
       })
       .filter((item) => item.text && item.rect.width > 0 && item.rect.height > 0)
       .filter((item) => item.rect.bottom >= 0 && item.rect.top <= window.innerHeight)
@@ -711,12 +493,12 @@ function getClickSignExpression() {
         const bScore = (b.text.includes('签到') ? 0 : 10) + (b.text.includes('京豆') ? 0 : 5) + b.text.length / 1000;
         return aScore - bScore;
       });
-    const target = nodes[0];
+    const target = elements[0];
     if (!target) {
       return { clicked: false, reason: '未找到签到/领京豆元素' };
     }
-    target.node.scrollIntoView({ block: 'center', inline: 'center' });
-    target.node.click();
+    target.element.scrollIntoView({ block: 'center', inline: 'center' });
+    target.element.click();
     return {
       clicked: true,
       text: target.text.slice(0, 120),
@@ -730,8 +512,8 @@ function getClickSignExpression() {
   })()`;
 }
 
-async function runChromeFallback(runtime) {
-  $.log(`账号${runtime.index} ${runtime.userName}: Node 未完成签到，切换 headless Chrome 调试`);
+async function runChromeSign(runtime) {
+  $.log(`账号${runtime.index} ${runtime.userName}: 使用 headless Chrome 执行秒杀签到`);
   let chromeRuntime = null;
   let clickedCount = 0;
   let finalState = null;
@@ -782,221 +564,15 @@ function summarizeChromeState(state) {
   };
 }
 
-async function callApi(runtime, apiConfig, body) {
-  const url = `${API_ENDPOINT}?functionId=${apiConfig.functionId}`;
-  const form = await buildSignedForm(runtime, apiConfig, body);
-  const headers = buildRequestHeaders(runtime);
-
-  logRequest(runtime, apiConfig, url, form);
-  const response = await got.post(url, {
-    body: form.toString(),
-    headers,
-    throwHttpErrors: false,
-    timeout: { request: REQUEST_TIMEOUT_MS },
-  });
-  const parsedBody = parseResponseBody(response.body || '');
-  logResponse(runtime, apiConfig, response, parsedBody);
-
-  return {
-    statusCode: response.statusCode,
-    body: parsedBody,
-    rawBody: response.body || '',
-  };
-}
-
-function isSuccessResponse(responseBody) {
-  const code = String(responseBody?.code ?? responseBody?.errCode ?? '');
-  const bizCodeValue = responseBody?.data?.bizCode ?? responseBody?.bizCode;
-  const bizCode = String(bizCodeValue ?? '');
-  const text = JSON.stringify(responseBody || {});
-  if (bizCodeValue !== undefined && bizCode !== '0') {
-    return false;
-  }
-  return responseBody?.success === true
-    || code === '0'
-    || code === '200'
-    || bizCode === '0'
-    || /成功|完成|已完成|领取/.test(text);
-}
-
-function getSceneData(responseBody) {
-  return responseBody?.data || {};
-}
-
-function summarizeScene(responseBody) {
-  const data = getSceneData(responseBody);
-  return {
-    status: data.status,
-    totalUserBean: data.totalUserBean || data.totalBean?.beanNum,
-    continuousDays: data.continuousDays,
-    todayBeanNum: data.todayBeanNum,
-    signType: data.signType,
-    task: extractSignTask(data),
-    entryBenefit: data.seckillBenefitVO
-      ? {
-        status: data.seckillBenefitVO.status,
-        taskType: data.seckillBenefitVO.taskType,
-        awards: summarizeAwards(data.seckillBenefitVO.awardList),
-      }
-      : null,
-  };
-}
-
-function summarizeAwards(awardList) {
-  if (!Array.isArray(awardList)) {
-    return [];
-  }
-  return awardList.map((award) => ({
-    type: award.type,
-    status: award.status,
-    beanNum: award.beanNum,
-    amount: award.amount,
-    prizeName: award.prizeName || award.rewardName,
-  }));
-}
-
-function extractSignTask(sceneData) {
-  const taskList = Array.isArray(sceneData?.signComponentInfoResult)
-    ? sceneData.signComponentInfoResult
-    : [];
-
-  return taskList.find((task) => task?.encryptAssignmentId)
-    || taskList.find((task) => task?.assignmentId)
-    || null;
-}
-
-function isTaskCompleted(task) {
-  return Boolean(
-    task?.completionFlag
-    || task?.completed
-    || String(task?.status || '') === '2',
-  );
-}
-
-function buildSceneBody() {
-  return {
-    requestSource: 'normal',
-    babelChannel: 'ttt1',
-    actSecTraffic: '1',
-    lng: Number(process.env.JD_MIAOSHA_SIGN_LNG || DEFAULT_LNG),
-    lat: Number(process.env.JD_MIAOSHA_SIGN_LAT || DEFAULT_LAT),
-  };
-}
-
-function buildSignBody(task) {
-  return {
-    scene: 'commonDoInteractiveAssignment',
-    activityCode: 'beanDailySign',
-    businessScenario: 'jingDouCenter',
-    commonScene: 'secKillChannel',
-    assignmentId: String(task.encryptAssignmentId || task.assignmentId || ''),
-  };
-}
-
-async function queryScene(runtime, label) {
-  const response = await callApi(runtime, API_CONFIG.queryScene, buildSceneBody());
-  $.log(`账号${runtime.index} ${runtime.userName}: ${label} => ${stringifyForLog(summarizeScene(response.body), 1600)}`);
-  return response;
-}
-
-async function tryEntryBenefit(runtime) {
-  if (process.env.JD_MIAOSHA_SIGN_SKIP_ENTRY === '1') {
-    $.log(`账号${runtime.index} ${runtime.userName}: 已跳过秒杀入口权益领取`);
-    return;
-  }
-
-  const response = await callApi(runtime, API_CONFIG.entryBenefit, {
-    channelId: '2',
-    actSecTraffic: '1',
-  });
-  const result = response.body?.data?.result || response.body?.result || {};
-  $.log(`账号${runtime.index} ${runtime.userName}: 秒杀入口权益 => ${stringifyForLog({
-    success: isSuccessResponse(response.body),
-    status: result.status,
-    taskType: result.taskType,
-    awards: summarizeAwards(result.awardList),
-    message: response.body?.message || response.body?.msg || response.body?.data?.bizMsg,
-  })}`);
-}
-
-async function tryPreExecutor(runtime) {
-  if (process.env.JD_MIAOSHA_SIGN_SKIP_PRE === '1') {
-    return;
-  }
-
-  const response = await callApi(runtime, API_CONFIG.preExecutor, {});
-  $.log(`账号${runtime.index} ${runtime.userName}: 秒杀任务预查询 => ${stringifyForLog(response.body?.data?.result || response.body, 1200)}`);
-}
-
-async function signDaily(runtime, task) {
-  if (!task) {
-    $.log(`账号${runtime.index} ${runtime.userName}: 未找到签到任务，跳过签到`);
-    return false;
-  }
-
-  if (isTaskCompleted(task)) {
-    $.log(`账号${runtime.index} ${runtime.userName}: 签到任务已完成 => ${task.assignmentName || task.encryptAssignmentId || task.assignmentId}`);
-    return true;
-  }
-
-  const response = await callApi(runtime, API_CONFIG.sign, buildSignBody(task));
-  const rewardsInfo = response.body?.rs?.rewardsInfo || {};
-  $.log(`账号${runtime.index} ${runtime.userName}: 签到结果 => ${stringifyForLog({
-    success: isSuccessResponse(response.body),
-    code: response.body?.code,
-    msg: response.body?.msg || response.body?.displayMsg,
-    assignmentInfo: response.body?.rs?.assignmentInfo,
-    rewardsInfo,
-  }, 2200)}`);
-
-  return isSuccessResponse(response.body);
-}
-
 async function handleAccount(cookie, index) {
-  const runtime = await createRuntime(cookie, index);
+  const runtime = createRuntime(cookie, index);
   $.log(`\n==== 账号${index} ${runtime.userName} ====`);
   $.log(`账号${index} ${runtime.userName}: UA => ${runtime.userAgent}`);
-  $.log(`账号${index} ${runtime.userName}: uuid => ${runtime.uuid}`);
-  $.log(`账号${index} ${runtime.userName}: x-api-eid-token => ${runtime.eidToken ? `${runtime.eidToken.slice(0, 18)}...` : '空'}`);
-
-  await tryPreExecutor(runtime);
-  await tryEntryBenefit(runtime);
-  await sleep(RETRY_WAIT_MS);
-
-  const beforeResponse = await queryScene(runtime, '签到前状态');
-  const beforeData = getSceneData(beforeResponse.body);
-  const signTask = extractSignTask(beforeData);
-  const nodeSignSuccess = await signDaily(runtime, signTask);
-  let chromeResult = null;
-
-  if (!nodeSignSuccess) {
-    chromeResult = await runChromeFallback(runtime);
-  }
-
-  await sleep(RETRY_WAIT_MS);
-
-  const afterResponse = await queryScene(runtime, '签到后状态');
-  const beforeSummary = summarizeScene(beforeResponse.body);
-  const afterSummary = summarizeScene(afterResponse.body);
-  $.log(`账号${index} ${runtime.userName}: 京豆变化 => ${stringifyForLog({
-    before: {
-      totalUserBean: beforeSummary.totalUserBean,
-      continuousDays: beforeSummary.continuousDays,
-      status: beforeSummary.status,
-    },
-    after: {
-      totalUserBean: afterSummary.totalUserBean,
-      continuousDays: afterSummary.continuousDays,
-      status: afterSummary.status,
-    },
+  const chromeResult = await runChromeSign(runtime);
+  $.log(`账号${index} ${runtime.userName}: Chrome 签到结果 => ${stringifyForLog({
+    clickedCount: chromeResult.clickedCount,
+    ...chromeResult.summary,
   })}`);
-
-  if (chromeResult && String(afterResponse.body?.code || '') === '402') {
-    $.log(`账号${index} ${runtime.userName}: Node 复查仍被限流，Chrome 兜底结果 => ${stringifyForLog({
-      clickedCount: chromeResult.clickedCount,
-      ...chromeResult.summary,
-    })}`);
-  }
 }
 
 (async () => {
