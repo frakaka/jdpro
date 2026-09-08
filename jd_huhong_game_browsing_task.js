@@ -81,8 +81,8 @@ const DEFAULT_CHROME_CANDIDATES = [
 const HEADFUL = process.env.JD_HUHONG_CHROME_HEADFUL === '1';
 const BOOTSTRAP_WAIT_MS = readPositiveInt(process.env.JD_HUHONG_CHROME_LOAD_MS, 15000);
 const CHROME_EVALUATE_TIMEOUT_MS = readPositiveInt(process.env.JD_HUHONG_CHROME_EVALUATE_TIMEOUT_MS, 45000);
-const TASK_WAIT_BUFFER_MS = readPositiveInt(process.env.JD_HUHONG_TASK_WAIT_BUFFER_MS, 2500);
-const COMPLETE_RETRY_TIMES = readPositiveInt(process.env.JD_HUHONG_COMPLETE_RETRY_TIMES, 3);
+const TASK_WAIT_BUFFER_MS = readPositiveInt(process.env.JD_HUHONG_TASK_WAIT_BUFFER_MS, 8000);
+const COMPLETE_RETRY_TIMES = readPositiveInt(process.env.JD_HUHONG_COMPLETE_RETRY_TIMES, 5);
 const STAGE_CLAIM_ROUNDS = readPositiveInt(process.env.JD_HUHONG_STAGE_CLAIM_ROUNDS, 4);
 const MAX_TASKS = readMaxTasks();
 
@@ -627,7 +627,7 @@ async function completeBrowseTask(cookie, prefix, browserSession, task, item) {
       return true;
     }
     if (attempt < COMPLETE_RETRY_TIMES) {
-      await sleep(2500);
+      await sleep(2500 * attempt);
     }
   }
 
